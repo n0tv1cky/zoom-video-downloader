@@ -106,6 +106,18 @@ This file identifies the *app*, not your identity — you still grant it
 access to your own account interactively on first run. Don't commit it
 anywhere public regardless.
 
+**Token expiry risk:** an OAuth client you create like this defaults to
+Google's "Testing" publishing status (not verified/published). Google can
+expire refresh tokens for testing-status apps — most commonly after ~7 days
+of the app going unused, or if you don't periodically re-consent. If that
+happens, cached auth stops working until you run the script once
+interactively again to re-consent (`googleOAuth.tokenFile` gets deleted or
+just fails to authenticate — either way, running `node download-recordings.mjs`
+by hand will prompt for a fresh login). This mainly matters for the
+unattended daily automation below, since it can't complete an interactive
+consent flow by itself — its failure-path notification is what's meant to
+tell you this happened, rather than the job just going quiet.
+
 The script requests the broad `drive` scope (not the narrower `drive.file`),
 because it needs to create files inside a Drive folder *you* picked, not one
 the app created itself — `drive.file` only grants access to files/folders
@@ -156,6 +168,102 @@ Useful flags:
 node download-recordings.mjs --dry-run       # list what would be downloaded, no browser download
 node download-recordings.mjs --limit 1       # only process the first pending row (handy for testing)
 ```
+
+## Unattended daily automation
+
+The whole point of the OAuth + dedicated Chrome profile setup above is that,
+once done once, the script needs no human present. `scripts/zoom-recordings/daily-check.sh`
+wraps it with AI supervision on top, and a macOS `launchd` LaunchAgent
+triggers it once a day with nobody watching:
+
+```
+launchd (9:00 AM daily)
+  -> ~/.zoom-recordings-sync/daily-check.sh
+       -> claude -p "<prompt>" --remote-control zoom-recordings-daily \
+                                --permission-mode bypassPermissions \
+                                --disallowedTools Write,Edit,NotebookEdit
+            -> runs download-recordings.mjs
+            -> sends exactly one PushNotification with the outcome
+```
+
+**Why a wrapper around Claude Code instead of just running the script
+directly:** the raw script either succeeds or throws — there's nothing
+watching for "this succeeded but something about it looks off" (sheet
+columns renamed, a share link behaving unexpectedly, credentials that need
+refreshing). The wrapper gives an AI a chance to notice and explain that,
+rather than you finding out days later from a silent failure. It's
+deliberately *not* allowed to fix problems itself (`Write`/`Edit`/`NotebookEdit`
+are disallowed) — it diagnoses and notifies, you decide what to do about it.
+
+**Setup:**
+
+1. Deploy the wrapper script outside `~/Documents` — required (see gotcha
+   below), and re-run this any time you edit `scripts/zoom-recordings/daily-check.sh`:
+   ```bash
+   cp scripts/zoom-recordings/daily-check.sh ~/.zoom-recordings-sync/daily-check.sh
+   chmod +x ~/.zoom-recordings-sync/daily-check.sh
+   ```
+2. Install the LaunchAgent (`~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist`
+   — edit the `Hour`/`Minute` in its `StartCalendarInterval` if you want a
+   different time than 9:00 AM):
+   ```bash
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
+   ```
+
+**Day-to-day commands:**
+
+```bash
+# Check what happened on recent runs (this is where the AI's own summary lands)
+tail -f ~/.zoom-recordings-sync/daily-check.log
+
+# Trigger a run right now, without waiting for 9am (useful for testing)
+launchctl kickstart gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
+
+# Check whether it's currently registered/running and see its config
+launchctl print gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
+
+# Stop it entirely (unregisters the scheduled job; doesn't delete any files)
+launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
+
+# Fully uninstall (stop it, then remove the plist so it can't be re-bootstrapped by accident)
+launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
+rm ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
+
+# Reinstall after editing the plist itself (e.g. changing the scheduled time)
+launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync   # ok if this errors "could not find" -- means it wasn't loaded
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
+```
+
+**Notifications:** `--remote-control zoom-recordings-daily` gives the
+invoked session a stable Remote Control connection, so `PushNotification`
+calls reach your phone (requires Remote Control already paired to your
+account via the mobile app — a one-time setup independent of this script).
+One real behavior to know about: the `PushNotification` tool itself
+suppresses sending if it detects an actively-watched Claude Code terminal
+(to avoid a redundant ping when you're already looking at the output) —
+this is enforced by the tool, not something the prompt can override. It
+won't trigger at the real unattended 9am run (nothing is watching then),
+but it does mean you can't fully verify the phone-push path by manually
+`kickstart`-ing it while you have a Claude Code session open, like I did
+while building this — that manual test will always show "notification
+skipped" in the log for that reason. Wait for a natural (unwatched) 9am
+firing to confirm you actually receive it on your phone.
+
+**Known gotcha (already solved, documented for future edits):** macOS TCC
+blocks background (non-GUI, launchd-spawned) processes from *executing* a
+script that lives inside `~/Documents` — you'll see `Operation not
+permitted` in the log, even though the very same script runs fine from an
+interactive terminal, and even though `node` itself can freely *read* files
+under `~/Documents` from the same context. There's no way to grant this
+non-interactively (it needs a GUI permission dialog with nobody there to
+click it). The fix is structural, not a permission grant: keep the actual
+executed entrypoint (`daily-check.sh`) outside `~/Documents` entirely —
+which is why the deployed copy lives in `~/.zoom-recordings-sync/` while the
+git-tracked source stays in the repo for review/history.
+
+**On the OAuth token expiring:** see the note under Google OAuth setup above
+— if it happens, this wrapper's failure-path notification is exactly the
+mechanism that should tell you, rather than the job just going quiet.
 
 ## Using it next term
 
