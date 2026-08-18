@@ -1,0 +1,16 @@
+{
+  "name": "zoom-recordings-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Downloads class Zoom recordings listed in a Google Sheet before their share links expire, named from the sheet's course code / date / faculty columns.",
+  "scripts": {
+    "sync": "node download-recordings.mjs",
+    "sync:dry": "node download-recordings.mjs --dry-run"
+  },
+  "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "googleapis": "^174.0.1",
+    "puppeteer": "^25.0.0"
+  }
+}

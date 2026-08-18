@@ -1,0 +1,56 @@
+{
+  "term": "MSDSM Batch 6 - Term 1",
+
+  "recordingsSheet": {
+    "id": "<YOUR_RECORDINGS_SHEET_ID>",
+    "gid": "0"
+  },
+
+  "columns": {
+    "date": "Date",
+    "time": "Time",
+    "courseCode": "Course Code with Session No.",
+    "faculty": "Faculty",
+    "linkActiveFrom": "Link active from date",
+    "linkActiveTo": "To Date",
+    "link": "Recording Link"
+  },
+
+  "outputDir": "../../docs/recordings/videos/MSDSM_Batch6_Term1",
+  "organizeByCourse": true,
+  "stateFile": "~/.zoom-recordings-sync/msdsm-batch6-term1-state.json",
+
+  "chrome": {
+    "useSystemProfile": false,
+    "userDataDir": "",
+    "snapshotDir": "~/.zoom-recordings-sync/chrome-snapshot",
+    "profileDirectory": "Profile 3",
+    "profileEmailHint": "<YOUR_INSTITUTE_EMAIL>"
+  },
+  "chromeProfileDir": "~/.zoom-recordings-sync/chrome-profile",
+
+  "googleOAuth": {
+    "clientSecretFile": "./oauth-client.json",
+    "tokenFile": "~/.zoom-recordings-sync/google-oauth-token.json"
+  },
+
+  "driveUpload": {
+    "enabled": true,
+    "rootFolderId": "<YOUR_DRIVE_ROOT_FOLDER_ID>",
+    "organizeByCourse": true,
+    "deleteLocalAfterUpload": true
+  },
+
+  "fileNameTemplate": "{courseCode}_{date}_{faculty}.mp4",
+
+  "subjectCodeMap": {
+    "ME": "DSM 107",
+    "MC": "DSM 104",
+    "BR": "DSM 106",
+    "SM": "DSM 108",
+    "MP": "DSM 109",
+    "PS": "DSM 101",
+    "PFDS": "DSM 102",
+    "DS": "DSM 103"
+  }
+}
