@@ -8,22 +8,31 @@
 #   cp scripts/zoom-recordings/daily-check.sh ~/.zoom-recordings-sync/daily-check.sh
 #
 # Unlike running download-recordings.mjs directly, this gives Claude judgment
-# on top of the fixed script: it always sends exactly one push notification
-# summarizing the outcome (what synced, or what broke and why), rather than
-# either staying silent or failing invisibly in a log nobody checks. It does
-# not attempt to silently fix or rewrite code itself, by design: --allowedTools
-# below only grants Bash (to run the sync + inspect logs/state), Read, and
-# PushNotification -- no Write/Edit/NotebookEdit, so this is meant to run the
-# sync, catch and explain problems, and notify you -- not to patch things
-# without you seeing. Restricting to exactly these three tools (rather than
-# just excluding the write-capable ones) also shrinks the system prompt's
-# tool-schema section, which is most of every run's token cost since each
-# run is a fresh, uncached session.
+# on top of the fixed script: it diagnoses the outcome (what synced, or what
+# broke and why) in plain text, rather than either staying silent or failing
+# invisibly in a log nobody checks. It does not attempt to silently fix or
+# rewrite code itself, by design: --allowedTools below only grants Bash (to
+# run the sync + inspect logs/state) and Read -- no Write/Edit/NotebookEdit,
+# so this is meant to run the sync, catch and explain problems, and report --
+# not to patch things without you seeing. Restricting to exactly these tools
+# (rather than just excluding the write-capable ones) also shrinks the system
+# prompt's tool-schema section, which is most of every run's token cost since
+# each run is a fresh, uncached session.
+#
+# Sending the actual phone notification is NOT one of Claude's tools here --
+# the PushNotification tool turned out not to reliably reach the phone from
+# an unattended `-p` run (its Remote Control pairing appears to need an
+# interactive session; see git history for the debugging). iMessage-to-self
+# doesn't alert either (Apple suppresses notifications for messages sent to
+# yourself from one of your own signed-in devices). Both would also cost
+# tokens as an extra tool call. Instead, Claude just returns its summary as
+# plain text (.result below), and this script sends *that* via `osascript`
+# directly -- a deterministic bash step, zero extra tokens, no LLM involved
+# in the send itself.
 #
 # --remote-control gives this session a stable, named Remote Control
-# connection, so PushNotification below reaches your phone (not just this
-# Mac's desktop notifications) and the run is viewable/attachable from the
-# Claude Code mobile app while or after it runs.
+# connection so the run is viewable/attachable from the Claude Code mobile
+# app while or after it runs -- unrelated to the notification path above.
 #
 # --model pins this to Haiku 4.5 rather than the default Sonnet. The task is
 # mechanical (run a script, read its output, send one notification) and
@@ -36,15 +45,15 @@
 
 set -euo pipefail
 
-PROMPT='You are running unattended, triggered by a macOS launchd scheduled job with nobody watching this terminal -- your output only ever gets read later in a log file, if at all. This means the usual "skip the notification, the user is already watching the terminal" judgment call does NOT apply here: always send the PushNotification described below, every single run, with no exceptions.
+PHONE_NUMBER="+919148786777"
 
-Run the Zoom recordings sync now: node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/download-recordings.mjs (run it with that absolute path; no need to cd anywhere -- it resolves its own config relative to the script file regardless of working directory).
+PROMPT='Run the Zoom recordings sync now: node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/download-recordings.mjs (run it with that absolute path; no need to cd anywhere -- it resolves its own config relative to the script file regardless of working directory).
 
-Regardless of outcome, send exactly one PushNotification at the end summarizing what happened, under 200 characters, leading with the actionable part:
+Reply with a single plain-text summary, under 200 characters, leading with the actionable part -- this is the only output that reaches me (I am not watching this run), so do not just describe what you would do, actually state the outcome:
 - If it completed cleanly (nothing new, or everything downloaded/uploaded without error): a short one-line summary, e.g. "Zoom sync: 2 new recordings uploaded" or "Zoom sync: nothing new today."
-- If something failed or looked wrong (auth/credential error, the recordings sheet or schedule sheet structure looks different than expected, a Zoom share link behaves unexpectedly, the Drive upload fails, etc.): spend a little time investigating why first -- check the error output, check recent entries in the state file (~/.zoom-recordings-sync/*-state.json), check whether the sheet columns/format changed -- then notify with what broke and what I need to do about it.
+- If something failed or looked wrong (auth/credential error, the recordings sheet or schedule sheet structure looks different than expected, a Zoom share link behaves unexpectedly, the Drive upload fails, etc.): spend a little time investigating why first -- check the error output, check recent entries in the state file (~/.zoom-recordings-sync/*-state.json), check whether the sheet columns/format changed -- then summarize what broke and what I need to do about it.
 
-Do not modify any files or code -- only diagnose and report.'
+Do not modify any files or code -- only diagnose and report. Do not send any notification yourself -- just return the summary as your final reply.'
 
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start ====="
 
@@ -59,14 +68,15 @@ set +e
 raw_output=$(claude -p "$PROMPT" \
   --remote-control zoom-recordings-daily \
   --permission-mode bypassPermissions \
-  --allowedTools "Bash,Read,PushNotification" \
+  --allowedTools "Bash,Read" \
   --model claude-haiku-4-5-20251001 \
   --output-format json)
 claude_exit=$?
 set -e
 
 if echo "$raw_output" | jq -e . >/dev/null 2>&1; then
-  echo "$raw_output" | jq -r '.result'
+  summary=$(echo "$raw_output" | jq -r '.result')
+  echo "$summary"
   echo "$raw_output" | jq -r '
     "[tokens] input=\(.usage.input_tokens) output=\(.usage.output_tokens) " +
     "cache_creation=\(.usage.cache_creation_input_tokens) cache_read=\(.usage.cache_read_input_tokens) " +
@@ -74,9 +84,21 @@ if echo "$raw_output" | jq -e . >/dev/null 2>&1; then
   '
 else
   # claude didn't return valid JSON (e.g. crashed before producing output) --
-  # fall back to logging whatever it did print, raw.
-  echo "$raw_output"
+  # fall back to logging whatever it did print, raw, and send that instead.
+  summary="$raw_output"
+  echo "$summary"
 fi
+
+# Plain AppleScript send, no LLM/tool call involved -- see the comment block
+# up top for why this replaced PushNotification and iMessage-to-self alerts.
+# Passed as script arguments (not interpolated into the AppleScript source)
+# so nothing in $summary needs shell/AppleScript quote-escaping.
+osascript \
+  -e 'on run {msg, num}' \
+  -e 'tell application "Messages" to send msg to buddy num of service 1' \
+  -e 'end run' \
+  -- "$summary" "$PHONE_NUMBER" >/dev/null 2>&1 \
+  || echo "WARN: failed to send iMessage notification"
 
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end (exit $claude_exit) ====="
 exit $claude_exit

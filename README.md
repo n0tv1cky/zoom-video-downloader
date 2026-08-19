@@ -181,9 +181,13 @@ launchd (9:00 AM daily)
   -> ~/.zoom-recordings-sync/daily-check.sh
        -> claude -p "<prompt>" --remote-control zoom-recordings-daily \
                                 --permission-mode bypassPermissions \
-                                --disallowedTools Write,Edit,NotebookEdit
-            -> runs download-recordings.mjs
-            -> sends exactly one PushNotification with the outcome
+                                --allowedTools Bash,Read \
+                                --model claude-haiku-4-5-20251001
+            -> runs download-recordings.mjs, diagnoses the outcome,
+               returns a plain-text summary (no tool call for this --
+               see "Notifications" below for why)
+       -> osascript sends that summary via iMessage to your phone
+            (plain AppleScript, no LLM involved in the send itself)
 ```
 
 **Why a wrapper around Claude Code instead of just running the script
@@ -234,20 +238,30 @@ launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync   # ok if this 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
 ```
 
-**Notifications:** `--remote-control zoom-recordings-daily` gives the
-invoked session a stable Remote Control connection, so `PushNotification`
-calls reach your phone (requires Remote Control already paired to your
-account via the mobile app — a one-time setup independent of this script).
-One real behavior to know about: the `PushNotification` tool itself
-suppresses sending if it detects an actively-watched Claude Code terminal
-(to avoid a redundant ping when you're already looking at the output) —
-this is enforced by the tool, not something the prompt can override. It
-won't trigger at the real unattended 9am run (nothing is watching then),
-but it does mean you can't fully verify the phone-push path by manually
-`kickstart`-ing it while you have a Claude Code session open, like I did
-while building this — that manual test will always show "notification
-skipped" in the log for that reason. Wait for a natural (unwatched) 9am
-firing to confirm you actually receive it on your phone.
+**Notifications:** the wrapper does *not* use Claude Code's `PushNotification`
+tool. Two things were tried and ruled out first:
+- `PushNotification` over `--remote-control`: real 9am unattended runs
+  logged "Remote Control is inactive" — `--remote-control [name]` is
+  documented as starting *an interactive session*, and that pairing doesn't
+  appear to reliably establish in time for a one-shot `-p` run. (Also
+  observed: the custom session name wasn't even honored under `-p` — it
+  showed up under an auto-generated name instead.)
+- iMessage-to-self via AppleScript: delivers fine (confirmed in `chat.db`),
+  but Apple suppresses the phone notification banner for a message sent to
+  yourself from one of your own signed-in devices — a deliberate anti-loop
+  behavior, not something a script can override.
+
+What actually works: Claude's `-p` run returns its diagnosis as plain text
+(no tool call — `--allowedTools Bash,Read` doesn't even grant it a way to
+send anything), and `daily-check.sh` sends *that* text via a plain
+`osascript`/AppleScript call to your phone number (`$PHONE_NUMBER` near the
+top of the script), completely outside the LLM call. This delivers the
+message reliably (confirmed via `chat.db`); you won't get an alert banner
+for it (same self-chat suppression as above), so check
+`~/.zoom-recordings-sync/daily-check.log` or the Messages thread with
+yourself if you want to be sure nothing broke, rather than relying on an
+alert. This also means the message-sending step costs no extra tokens
+beyond the diagnosis itself.
 
 **Known gotcha (already solved, documented for future edits):** macOS TCC
 blocks background (non-GUI, launchd-spawned) processes from *executing* a
