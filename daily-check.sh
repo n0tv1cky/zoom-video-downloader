@@ -34,17 +34,34 @@ Do not modify any files or code -- only diagnose and report.'
 
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start ====="
 
+# --output-format json (instead of text) gives us the same final summary via
+# .result, plus token usage and cost -- so the log can show both without a
+# second, separate lookup into ~/.claude/projects/*/*.jsonl afterward.
+#
 # Not `claude -p ... || exit 1`: that would skip the "run end" timestamp
 # below on failure, right when the log needs it most. Capture the exit code
 # instead, always log the end marker, then propagate the code afterward.
 set +e
-claude -p "$PROMPT" \
+raw_output=$(claude -p "$PROMPT" \
   --remote-control zoom-recordings-daily \
   --permission-mode bypassPermissions \
   --disallowedTools "Write,Edit,NotebookEdit" \
-  --output-format text
+  --output-format json)
 claude_exit=$?
 set -e
+
+if echo "$raw_output" | jq -e . >/dev/null 2>&1; then
+  echo "$raw_output" | jq -r '.result'
+  echo "$raw_output" | jq -r '
+    "[tokens] input=\(.usage.input_tokens) output=\(.usage.output_tokens) " +
+    "cache_creation=\(.usage.cache_creation_input_tokens) cache_read=\(.usage.cache_read_input_tokens) " +
+    "cost_usd=\(.total_cost_usd) session=\(.session_id)"
+  '
+else
+  # claude didn't return valid JSON (e.g. crashed before producing output) --
+  # fall back to logging whatever it did print, raw.
+  echo "$raw_output"
+fi
 
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end (exit $claude_exit) ====="
 exit $claude_exit
