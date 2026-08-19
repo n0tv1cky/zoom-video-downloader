@@ -11,14 +11,28 @@
 # on top of the fixed script: it always sends exactly one push notification
 # summarizing the outcome (what synced, or what broke and why), rather than
 # either staying silent or failing invisibly in a log nobody checks. It does
-# not attempt to silently fix or rewrite code itself (Write/Edit are
-# disallowed below), by design: this is meant to run the sync, catch and
-# explain problems, and notify you -- not to patch things without you seeing.
+# not attempt to silently fix or rewrite code itself, by design: --allowedTools
+# below only grants Bash (to run the sync + inspect logs/state), Read, and
+# PushNotification -- no Write/Edit/NotebookEdit, so this is meant to run the
+# sync, catch and explain problems, and notify you -- not to patch things
+# without you seeing. Restricting to exactly these three tools (rather than
+# just excluding the write-capable ones) also shrinks the system prompt's
+# tool-schema section, which is most of every run's token cost since each
+# run is a fresh, uncached session.
 #
 # --remote-control gives this session a stable, named Remote Control
 # connection, so PushNotification below reaches your phone (not just this
 # Mac's desktop notifications) and the run is viewable/attachable from the
 # Claude Code mobile app while or after it runs.
+#
+# --model pins this to Haiku 4.5 rather than the default Sonnet. The task is
+# mechanical (run a script, read its output, send one notification) and
+# doesn't need Sonnet-level reasoning; Haiku is priced substantially lower
+# per token, and since token *volume* here is mostly fixed system-prompt
+# overhead (not task complexity), per-token price is the main lever left to
+# cut cost. Trade-off: if something genuinely novel breaks (not a known
+# failure mode), Haiku's diagnosis in the notification may be less sharp --
+# acceptable here since it still can't touch code either way, only report.
 
 set -euo pipefail
 
@@ -45,7 +59,8 @@ set +e
 raw_output=$(claude -p "$PROMPT" \
   --remote-control zoom-recordings-daily \
   --permission-mode bypassPermissions \
-  --disallowedTools "Write,Edit,NotebookEdit" \
+  --allowedTools "Bash,Read,PushNotification" \
+  --model claude-haiku-4-5-20251001 \
   --output-format json)
 claude_exit=$?
 set -e
