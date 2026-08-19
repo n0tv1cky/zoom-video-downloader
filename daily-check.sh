@@ -32,8 +32,19 @@ Regardless of outcome, send exactly one PushNotification at the end summarizing 
 
 Do not modify any files or code -- only diagnose and report.'
 
+echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start ====="
+
+# Not `claude -p ... || exit 1`: that would skip the "run end" timestamp
+# below on failure, right when the log needs it most. Capture the exit code
+# instead, always log the end marker, then propagate the code afterward.
+set +e
 claude -p "$PROMPT" \
   --remote-control zoom-recordings-daily \
   --permission-mode bypassPermissions \
   --disallowedTools "Write,Edit,NotebookEdit" \
   --output-format text
+claude_exit=$?
+set -e
+
+echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end (exit $claude_exit) ====="
+exit $claude_exit
