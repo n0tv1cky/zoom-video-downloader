@@ -179,15 +179,21 @@ triggers it once a day with nobody watching:
 ```
 launchd (9:00 AM daily)
   -> ~/.zoom-recordings-sync/daily-check.sh
-       -> claude -p "<prompt>" --remote-control zoom-recordings-daily \
-                                --permission-mode bypassPermissions \
-                                --allowedTools Bash,Read \
-                                --model claude-haiku-4-5-20251001
+       -> caffeinate -i claude -p "<prompt>" --remote-control zoom-recordings-daily \
+                                              --permission-mode bypassPermissions \
+                                              --allowedTools Bash,Read \
+                                              --model claude-haiku-4-5-20251001
             -> runs download-recordings.mjs, diagnoses the outcome,
                returns a plain-text summary (no tool call for this --
                see "Notifications" below for why)
        -> osascript sends that summary via iMessage to your phone
             (plain AppleScript, no LLM involved in the send itself)
+       -> on failure, writes today's date to ~/.zoom-recordings-sync/retry-pending
+
+launchd (every 15 min, catches up on wake if it missed a tick asleep)
+  -> ~/.zoom-recordings-sync/retry-if-needed.sh
+       -> no-op if retry-pending is absent or stale (near-zero cost)
+       -> otherwise: consumes the flag, runs daily-check.sh --retry once
 ```
 
 **Why a wrapper around Claude Code instead of just running the script
@@ -201,17 +207,22 @@ are disallowed) — it diagnoses and notifies, you decide what to do about it.
 
 **Setup:**
 
-1. Deploy the wrapper script outside `~/Documents` — required (see gotcha
-   below), and re-run this any time you edit `scripts/zoom-recordings/daily-check.sh`:
+1. Deploy the wrapper scripts outside `~/Documents` — required (see gotcha
+   below), and re-run this any time you edit `scripts/zoom-recordings/daily-check.sh`
+   or `scripts/zoom-recordings/retry-if-needed.sh`:
    ```bash
    cp scripts/zoom-recordings/daily-check.sh ~/.zoom-recordings-sync/daily-check.sh
-   chmod +x ~/.zoom-recordings-sync/daily-check.sh
+   cp scripts/zoom-recordings/retry-if-needed.sh ~/.zoom-recordings-sync/retry-if-needed.sh
+   chmod +x ~/.zoom-recordings-sync/daily-check.sh ~/.zoom-recordings-sync/retry-if-needed.sh
    ```
-2. Install the LaunchAgent (`~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist`
-   — edit the `Hour`/`Minute` in its `StartCalendarInterval` if you want a
-   different time than 9:00 AM):
+2. Install both LaunchAgents — the daily job
+   (`~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist`, edit the
+   `Hour`/`Minute` in its `StartCalendarInterval` if you want a different time
+   than 9:00 AM) and the retry-checker
+   (`~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-retry.plist`):
    ```bash
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-retry.plist
    ```
 
 **Day-to-day commands:**
@@ -262,6 +273,26 @@ for it (same self-chat suppression as above), so check
 yourself if you want to be sure nothing broke, rather than relying on an
 alert. This also means the message-sending step costs no extra tokens
 beyond the diagnosis itself.
+
+**Same-day retry:** the scheduled 9am run wraps `claude -p` in `caffeinate -i`
+(blocks idle sleep only for that call, released automatically when it exits)
+after a 2026-08-20 run got killed mid-request by idle sleep and silently
+missed 2 real recordings — but that only covers idle sleep, not a manual
+lid-close. If the scheduled run still fails for any reason, it writes today's
+date to `~/.zoom-recordings-sync/retry-pending` and exits. A second
+LaunchAgent (`com.n0tv1cky.zoom-recordings-retry.plist`) polls every 15
+minutes for that flag — there's no clean launchd "on wake" event, but a
+`StartInterval` job that was due while asleep fires once to catch up right
+after wake, the same mechanism `StartCalendarInterval` uses, so this
+effectively retries "next time the Mac wakes" as well as periodically while
+it's already awake. Almost every one of those 15-minute firings is a no-op
+(flag absent, near-zero cost); when the flag is set for *today* specifically,
+it consumes the flag and runs `daily-check.sh --retry` once. A `--retry` run
+does not re-arm the flag on failure, so this is at most one extra attempt per
+day — a second same-day failure is left for tomorrow's normal scheduled run
+(safe because the state file makes re-runs idempotent per recording). A flag
+left over from a previous day (e.g. the Mac stayed asleep for days) is
+discarded without running anything.
 
 **Known gotcha (already solved, documented for future edits):** macOS TCC
 blocks background (non-GUI, launchd-spawned) processes from *executing* a

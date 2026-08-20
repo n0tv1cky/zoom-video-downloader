@@ -42,10 +42,22 @@
 # cut cost. Trade-off: if something genuinely novel breaks (not a known
 # failure mode), Haiku's diagnosis in the notification may be less sharp --
 # acceptable here since it still can't touch code either way, only report.
+#
+# SAME-DAY RETRY: if today's scheduled (non-retry) run fails, it writes
+# today's date to $RETRY_FLAG below. retry-if-needed.sh (its own launchd job,
+# see com.n0tv1cky.zoom-recordings-retry.plist) checks that flag on a timer
+# that also catches up right after the Mac wakes from sleep, and if it's set
+# for today, calls this script again with --retry. A --retry run does NOT
+# re-arm the flag on failure, so this is at most one extra attempt per day --
+# a second same-day failure is left for tomorrow's normal scheduled run
+# (state file already makes that safe/idempotent; see README).
 
 set -euo pipefail
 
 PHONE_NUMBER="+919148786777"
+RETRY_FLAG=~/.zoom-recordings-sync/retry-pending
+is_retry=false
+[ "${1:-}" = "--retry" ] && is_retry=true
 
 PROMPT='Run the Zoom recordings sync now: node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/download-recordings.mjs (run it with that absolute path; no need to cd anywhere -- it resolves its own config relative to the script file regardless of working directory).
 
@@ -55,7 +67,9 @@ Reply with a single plain-text summary, under 200 characters, leading with the a
 
 Do not modify any files or code -- only diagnose and report. Do not send any notification yourself -- just return the summary as your final reply.'
 
-echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start ====="
+retry_tag=""
+if $is_retry; then retry_tag=" (retry)"; fi
+echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start${retry_tag} ====="
 
 # --output-format json (instead of text) gives us the same final summary via
 # .result, plus token usage and cost -- so the log can show both without a
@@ -108,5 +122,10 @@ osascript \
   -- "$summary" "$PHONE_NUMBER" >/dev/null 2>&1 \
   || echo "WARN: failed to send iMessage notification"
 
-echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end (exit $claude_exit) ====="
+if [ "$claude_exit" -ne 0 ] && ! $is_retry; then
+  date +%F > "$RETRY_FLAG"
+  echo "Same-day retry queued (fires next wake/check via retry-if-needed.sh)."
+fi
+
+echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end${retry_tag} (exit $claude_exit) ====="
 exit $claude_exit
