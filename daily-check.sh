@@ -64,8 +64,16 @@ echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start ====="
 # Not `claude -p ... || exit 1`: that would skip the "run end" timestamp
 # below on failure, right when the log needs it most. Capture the exit code
 # instead, always log the end marker, then propagate the code afterward.
+#
+# caffeinate -i wraps just this call: on 2026-08-20 the laptop was awake when
+# launchd fired at 9am but went to idle sleep partway through the run, which
+# killed the in-flight API request ("Your computer went to sleep mid-response")
+# and produced a run that took until 10:58 to error out. -i (not -s) only
+# blocks *idle* sleep for the wrapped process's lifetime and releases
+# automatically when it exits -- it won't stop a manual lid-close/power-button
+# sleep, and it doesn't hold the machine awake outside of this one call.
 set +e
-raw_output=$(claude -p "$PROMPT" \
+raw_output=$(caffeinate -i claude -p "$PROMPT" \
   --remote-control zoom-recordings-daily \
   --permission-mode bypassPermissions \
   --allowedTools "Bash,Read" \
