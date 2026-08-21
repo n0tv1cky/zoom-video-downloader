@@ -61,6 +61,8 @@ is_retry=false
 
 PROMPT='Run the Zoom recordings sync now: node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/download-recordings.mjs (run it with that absolute path; no need to cd anywhere -- it resolves its own config relative to the script file regardless of working directory).
 
+IMPORTANT: pass a timeout of 600000 (the max, 10 minutes) on this Bash call -- downloading/uploading videos legitimately takes several minutes, longer than the 60s default, so a short timeout will background the command prematurely. If it still gets backgrounded for any reason, you MUST poll BashOutput until it actually finishes (status is no longer running) before writing your reply -- never reply while the sync is still in progress or only "waiting" on it; a reply ends this session and kills any still-running background command.
+
 Reply with a single plain-text summary, under 200 characters, leading with the actionable part -- this is the only output that reaches me (I am not watching this run), so do not just describe what you would do, actually state the outcome:
 - If it completed cleanly (nothing new, or everything downloaded/uploaded without error): a short one-line summary, e.g. "Zoom sync: 2 new recordings uploaded" or "Zoom sync: nothing new today."
 - If something failed or looked wrong (auth/credential error, the recordings sheet or schedule sheet structure looks different than expected, a Zoom share link behaves unexpectedly, the Drive upload fails, etc.): spend a little time investigating why first -- check the error output, check recent entries in the state file (~/.zoom-recordings-sync/*-state.json), check whether the sheet columns/format changed -- then summarize what broke and what I need to do about it.
