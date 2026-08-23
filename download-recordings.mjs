@@ -311,15 +311,27 @@ async function uploadToDrive(drive, driveConfig, termFolderId, courseFolderName,
 }
 
 function parseRows(rawRows, columns) {
+  // A second class recorded the same day can appear as its own row with its
+  // Date (and S.No/link-active-window) cells vertically merged into the row
+  // above -- the Sheets API only returns a value for a merge's top-left
+  // cell, so those cells come back blank on every row but the first. Forward
+  // -fill from the last non-blank date seen so a merged-away cell inherits
+  // the date it's visually grouped under, instead of formatDate() falling
+  // back to an empty filename segment.
+  let lastDate = "";
   return rawRows
-    .map((r) => ({
-      date: r[columns.date],
-      time: r[columns.time],
-      courseCode: r[columns.courseCode],
-      faculty: r[columns.faculty],
-      linkActiveTo: r[columns.linkActiveTo],
-      link: r[columns.link],
-    }))
+    .map((r) => {
+      const rawDate = r[columns.date];
+      if (rawDate !== "" && rawDate != null) lastDate = rawDate;
+      return {
+        date: rawDate !== "" && rawDate != null ? rawDate : lastDate,
+        time: r[columns.time],
+        courseCode: r[columns.courseCode],
+        faculty: r[columns.faculty],
+        linkActiveTo: r[columns.linkActiveTo],
+        link: r[columns.link],
+      };
+    })
     .filter((r) => r.link && String(r.link).startsWith("http"));
 }
 
