@@ -45,14 +45,23 @@
 # failure mode), Haiku's diagnosis in the notification may be less sharp --
 # acceptable here since it still can't touch code either way, only report.
 #
-# SAME-DAY RETRY: if today's scheduled (non-retry) run fails, it writes
-# today's date to $RETRY_FLAG below. retry-if-needed.sh (its own launchd job,
-# see com.n0tv1cky.zoom-recordings-retry.plist) checks that flag on a timer
-# that also catches up right after the Mac wakes from sleep, and if it's set
-# for today, calls this script again with --retry. A --retry run does NOT
-# re-arm the flag on failure, so this is at most one extra attempt per day --
-# a second same-day failure is left for tomorrow's normal scheduled run
-# (state file already makes that safe/idempotent; see README).
+# SAME-DAY RETRY: if today's scheduled (non-retry) run fails, it *usually*
+# writes today's date to $RETRY_FLAG below. retry-if-needed.sh (its own
+# launchd job, see com.n0tv1cky.zoom-recordings-retry.plist) checks that flag
+# on a timer that also catches up right after the Mac wakes from sleep, and
+# if it's set for today, calls this script again with --retry. A --retry run
+# does NOT re-arm the flag on failure, so this is at most one extra attempt
+# per day -- a second same-day failure is left for tomorrow's normal
+# scheduled run (state file already makes that safe/idempotent; see README).
+#
+# "Usually" because whether to retry at all is Claude's call, not a blind
+# reaction to a non-zero exit code -- see NO-RETRY TAGGING below. This is the
+# one piece of judgment Claude actually exercises here (everything else
+# below is fixed bash logic); it's a bounded, already-finished-log
+# classification, not the kind of "operate a long-running process and decide
+# when it's done" judgment that caused the backgrounding bug above -- that
+# distinction is why this is safe to hand to the same Haiku call that's
+# already writing the diagnosis, at no extra cost.
 #
 # THE SYNC RUNS DIRECTLY IN BASH, NOT AS SOMETHING CLAUDE INVOKES. Two
 # earlier designs had Claude run download-recordings.mjs itself via the Bash
@@ -99,6 +108,8 @@ Reply with a single plain-text summary, under 200 characters, leading with the a
 - If it completed cleanly (nothing new, or everything downloaded/uploaded without error): a short one-line summary, e.g. \"Zoom sync: 2 new recordings uploaded\" or \"Zoom sync: nothing new today.\"
 - If something failed or looked wrong (auth/credential error, the recordings sheet or schedule sheet structure looks different than expected, a Zoom share link behaves unexpectedly, the Drive upload fails, etc.): spend a little time investigating why first -- check the log, check recent entries in the state file (~/.zoom-recordings-sync/*-state.json), check whether the sheet columns/format changed -- then summarize what broke and what I need to do about it.
 
+If (and only if) exit code $sync_exit is non-zero, end your reply with the literal tag \"[NO-RETRY]\" (nothing after it) IF this looks like something an automatic same-day retry would NOT fix -- expired/invalid credentials, an auth prompt, the sheet's columns/structure changed, code that needs a real fix, or anything else where retrying in 15-60 minutes would just fail the same way. Leave the tag off for anything that plausibly IS transient (a network blip, a timeout, a Drive/Zoom hiccup, Chrome closing unexpectedly) -- those get retried automatically, and \"not sure\" should also default to leaving the tag off, since an unnecessary retry costs a few cents and 15 minutes, while wrongly suppressing a real retry costs a full missed day. The tag counts toward your 200-character budget.
+
 Do not modify any files or code -- only diagnose and report. Do not send any notification yourself -- just return the summary as your final reply."
 
 # --output-format json (instead of text) gives us the same final summary via
@@ -137,24 +148,41 @@ if echo "$raw_output" | jq -e . >/dev/null 2>&1; then
 else
   # claude didn't return valid JSON (e.g. crashed before producing output) --
   # fall back to logging whatever it did print, raw, and send that instead.
+  # No [NO-RETRY] tag can appear here, which is what we want: a Claude-side
+  # crash on top of a sync failure is itself ambiguous, and the fail-open
+  # default below (retry unless explicitly told not to) still applies.
   summary="$raw_output"
   echo "$summary"
 fi
 
+# NO-RETRY TAGGING: strip the tag before texting it (it's a machine signal
+# for the block below, not something worth reading on your phone) but keep
+# it in $summary for the log line above and the grep below.
+sms_text=$(echo "$summary" | sed -E 's/[[:space:]]*\[NO-RETRY\][[:space:]]*$//')
+
 # Plain AppleScript send, no LLM/tool call involved -- see the comment block
 # up top for why this replaced PushNotification and iMessage-to-self alerts.
 # Passed as script arguments (not interpolated into the AppleScript source)
-# so nothing in $summary needs shell/AppleScript quote-escaping.
+# so nothing in $sms_text needs shell/AppleScript quote-escaping.
 osascript \
   -e 'on run {msg, num}' \
   -e 'tell application "Messages" to send msg to buddy num of service 1' \
   -e 'end run' \
-  -- "$summary" "$PHONE_NUMBER" >/dev/null 2>&1 \
+  -- "$sms_text" "$PHONE_NUMBER" >/dev/null 2>&1 \
   || echo "WARN: failed to send iMessage notification"
 
-if [ "$claude_exit" -ne 0 ] && ! $is_retry; then
-  date +%F > "$RETRY_FLAG"
-  echo "Same-day retry queued (fires next wake/check via retry-if-needed.sh)."
+# Retry is gated on the SYNC failing (not claude_exit -- a Claude-side
+# hiccup while diagnosing a successful sync shouldn't queue a pointless
+# retry) and on Claude's own [NO-RETRY] classification, fail-open: retry
+# unless explicitly told not to. See "SAME-DAY RETRY" and "NO-RETRY TAGGING"
+# up top for why defaulting to retry is the safe direction here.
+if [ "$sync_exit" -ne 0 ] && ! $is_retry; then
+  if echo "$summary" | grep -qF '[NO-RETRY]'; then
+    echo "No same-day retry queued -- Claude judged this non-transient (see summary above); tomorrow's scheduled run will try again."
+  else
+    date +%F > "$RETRY_FLAG"
+    echo "Same-day retry queued (fires next wake/check via retry-if-needed.sh)."
+  fi
 fi
 
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end${retry_tag} (exit $claude_exit) ====="
