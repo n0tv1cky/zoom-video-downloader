@@ -179,11 +179,15 @@ triggers it once a day with nobody watching:
 ```
 launchd (9:00 AM daily)
   -> ~/.zoom-recordings-sync/daily-check.sh
-       -> caffeinate -i claude -p "<prompt>" --remote-control zoom-recordings-daily \
-                                              --permission-mode bypassPermissions \
-                                              --allowedTools Bash,Read \
-                                              --model claude-haiku-4-5-20251001
-            -> runs download-recordings.mjs, diagnoses the outcome,
+       -> caffeinate -i node download-recordings.mjs > last-sync-output.log
+            (runs synchronously in plain bash, no LLM involved, no
+             tool-call timeout to outrun -- see "Why the sync itself
+             doesn't run inside the Claude call" below)
+       -> claude -p "<prompt>" --remote-control zoom-recordings-daily \
+                                --permission-mode bypassPermissions \
+                                --allowedTools Bash,Read \
+                                --model claude-haiku-4-5-20251001
+            -> reads the already-finished log, diagnoses the outcome,
                returns a plain-text summary (no tool call for this --
                see "Notifications" below for why)
        -> osascript sends that summary via iMessage to your phone
@@ -204,6 +208,23 @@ refreshing). The wrapper gives an AI a chance to notice and explain that,
 rather than you finding out days later from a silent failure. It's
 deliberately *not* allowed to fix problems itself (`Write`/`Edit`/`NotebookEdit`
 are disallowed) — it diagnoses and notifies, you decide what to do about it.
+
+**Why the sync itself doesn't run inside the Claude call:** two earlier
+versions had Claude invoke `download-recordings.mjs` itself via the Bash
+tool (first with the 60s default timeout, then the 600s max). Both broke
+the same way once a run had enough new recordings to legitimately take
+longer than that: the tool call gets backgrounded, and Haiku declared
+itself "waiting for completion" / "monitor streaming" as its **final**
+reply instead of actually blocking on the result — which ends the `-p`
+session and kills the still-running sync mid-upload. Confirmed on
+2026-08-25: two downloads failed outright and a third finished downloading
+to disk but was killed before it could upload or even get written to the
+state file. This isn't a prompt-wording problem, it's a hard tool-timeout
+mechanic, so `daily-check.sh` now runs the sync as a plain synchronous bash
+command *before* ever calling `claude -p` — no timeout, no backgrounding
+possible — and Claude's job shrinks to reading the already-finished
+`~/.zoom-recordings-sync/last-sync-output.log` and summarizing it, which has
+no failure mode where ending its reply early loses work.
 
 **Setup:**
 
