@@ -295,25 +295,43 @@ yourself if you want to be sure nothing broke, rather than relying on an
 alert. This also means the message-sending step costs no extra tokens
 beyond the diagnosis itself.
 
-**Same-day retry:** the scheduled 9am run wraps `claude -p` in `caffeinate -i`
+**Same-day retry:** the scheduled 9am run wraps the sync in `caffeinate -i`
 (blocks idle sleep only for that call, released automatically when it exits)
 after a 2026-08-20 run got killed mid-request by idle sleep and silently
 missed 2 real recordings — but that only covers idle sleep, not a manual
-lid-close. If the scheduled run still fails for any reason, it writes today's
-date to `~/.zoom-recordings-sync/retry-pending` and exits. A second
-LaunchAgent (`com.n0tv1cky.zoom-recordings-retry.plist`) polls every 15
-minutes for that flag — there's no clean launchd "on wake" event, but a
-`StartInterval` job that was due while asleep fires once to catch up right
+lid-close. If the sync still fails for any reason, Claude reads its output
+(same diagnosis pass described above) and decides whether a retry could
+plausibly help: it tags its reply with a literal `[NO-RETRY]` when the
+failure looks non-transient (expired/invalid credentials, the sheet's
+columns/structure changed, something needing a real code fix) and leaves it
+off for anything that plausibly is transient (a network blip, a timeout, a
+Drive/Zoom hiccup) — `daily-check.sh` strips the tag before texting it
+(`$sms_text`) and greps for it to decide whether to write today's date to
+`~/.zoom-recordings-sync/retry-pending`. This is deliberately fail-open: an
+ambiguous or missing tag (including a Claude-side crash on top of the sync
+failure, where no valid JSON comes back at all) still defaults to *retrying*
+— an unneeded retry costs a few cents and 15 minutes, while wrongly
+suppressing a real one costs a full missed day, so the asymmetry favors
+retrying. This is the one piece of actual judgment Claude exercises in this
+whole pipeline (everything else is fixed bash logic); it's safe to hand it
+that judgment specifically because it's a bounded classification over an
+*already-finished* log, not the "operate a long-running process and decide
+when it's done" judgment that caused the backgrounding bug documented above
+— conflating those two kinds of judgment is exactly what broke twice.
+
+A second LaunchAgent (`com.n0tv1cky.zoom-recordings-retry.plist`) polls every
+15 minutes for the retry flag — there's no clean launchd "on wake" event, but
+a `StartInterval` job that was due while asleep fires once to catch up right
 after wake, the same mechanism `StartCalendarInterval` uses, so this
 effectively retries "next time the Mac wakes" as well as periodically while
 it's already awake. Almost every one of those 15-minute firings is a no-op
 (flag absent, near-zero cost); when the flag is set for *today* specifically,
 it consumes the flag and runs `daily-check.sh --retry` once. A `--retry` run
-does not re-arm the flag on failure, so this is at most one extra attempt per
-day — a second same-day failure is left for tomorrow's normal scheduled run
-(safe because the state file makes re-runs idempotent per recording). A flag
-left over from a previous day (e.g. the Mac stayed asleep for days) is
-discarded without running anything.
+does not re-arm the flag on failure (regardless of tag), so this is at most
+one extra attempt per day — a second same-day failure is left for tomorrow's
+normal scheduled run (safe because the state file makes re-runs idempotent
+per recording). A flag left over from a previous day (e.g. the Mac stayed
+asleep for days) is discarded without running anything.
 
 **Known gotcha (already solved, documented for future edits):** macOS TCC
 blocks background (non-GUI, launchd-spawned) processes from *executing* a
