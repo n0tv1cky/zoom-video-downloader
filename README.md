@@ -139,11 +139,25 @@ npm run sync
 - It reads the recordings sheet this way, skips anything already downloaded
   *and* uploaded (tracked in `stateFile`), and — only if there's a real Zoom
   download pending — launches a separate, dedicated Chrome profile for that
-  step. **First Zoom login only:** if that Chrome window lands on a Google or
-  Zoom sign-in page, log in there, then go back to the terminal and press
-  Enter. That session is saved in `chromeProfileDir` and reused after that.
-  This profile is independent of your normal Chrome, so there's no need to
-  close anything.
+  step, headlessly (no visible window, works fine with the lid closed) and
+  using your actual installed Google Chrome app (`channel: "chrome"`), not
+  Puppeteer's bundled "Chrome for Testing" binary — verified both the
+  login-state check and the play-and-capture-signed-URL flow work
+  identically headless, and that this doesn't require quitting your everyday
+  Chrome (it's a completely separate profile directory). Using the real
+  Chrome binary also stops macOS from repeatedly prompting for "Allow
+  access" permissions (filesystem, sometimes Music) — those prompts were
+  happening because the bundled binary's identity changes whenever
+  Puppeteer/its Chrome build updates, so macOS kept treating it as a new,
+  unrecognized app.
+- **First Zoom login only:** run `node download-recordings.mjs --headed`
+  once — headless has no visible window for you to log into, so if that page
+  lands on a Google or Zoom sign-in screen, it fails immediately with a
+  clear message telling you to re-run with `--headed`. With `--headed`, log
+  in in the visible Chrome window, then go back to the terminal and press
+  Enter. That session is saved in `chromeProfileDir` and reused headlessly
+  after that (until it eventually expires, at which point re-run with
+  `--headed` again).
 - Rows that are already downloaded locally but not yet uploaded (e.g. Drive
   upload was added after you'd already downloaded some recordings, or a
   previous upload failed) get uploaded directly — no browser launch needed

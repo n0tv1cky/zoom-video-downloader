@@ -97,6 +97,11 @@ echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start${retry_tag} ====="
 # stop a manual lid-close/power-button sleep, and it doesn't hold the
 # machine awake outside of this one call. No artificial timeout here (unlike
 # the Bash tool's), so a long download/upload just runs to completion.
+#
+# download-recordings.mjs runs headless by default now (real Google Chrome
+# via channel: "chrome", no visible window) -- so this no longer needs the
+# lid open at 9am, only awake (which caffeinate -i above still can't
+# guarantee against a manual lid-close, only idle sleep).
 set +e
 caffeinate -i node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/download-recordings.mjs > "$SYNC_LOG" 2>&1
 sync_exit=$?
