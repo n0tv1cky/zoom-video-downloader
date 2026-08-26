@@ -5,13 +5,15 @@
 //
 // Usage:
 //   npm install
-//   node download-recordings.mjs [--dry-run] [--limit N] [--config path/to/config.json]
+//   node download-recordings.mjs [--dry-run] [--limit N] [--config path/to/config.json] [--headed]
 //
 // The recordings sheet is read via the Google Sheets API using your own
 // OAuth login (one-time consent, cached after) -- see config.json's
 // "googleOAuth" section. Only the Zoom side needs a real browser; by default
 // that drives a separate, dedicated Chrome profile (one-time login, cached
-// after) -- see config.json's "chrome" section.
+// after) -- see config.json's "chrome" section. Runs headless by default (no
+// visible window, no lid-open-Mac requirement); pass --headed for the
+// one-time interactive login, or to re-login if the saved session expires.
 
 import puppeteer from "puppeteer";
 import { google } from "googleapis";
@@ -30,6 +32,12 @@ const limitIdx = args.indexOf("--limit");
 const LIMIT = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : Infinity;
 const configIdx = args.indexOf("--config");
 const CONFIG_PATH = configIdx !== -1 ? args[configIdx + 1] : new URL("./config.json", import.meta.url).pathname;
+// Headless by default (needs no visible window/lid-open Mac -- verified this
+// still works for both the login-state check and the play-and-capture-src
+// flow that grabClipUrls relies on). --headed forces a visible window, only
+// needed for the one-time interactive login the first time a profile signs
+// in, or to re-authenticate if the saved session ever expires.
+const HEADED = args.includes("--headed");
 
 function expandHome(p) {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
@@ -221,6 +229,15 @@ function courseFolder(subjectCode) {
 }
 
 async function waitForLogin(page, rl) {
+  // Headless has no visible window for a human to log in to, so waiting on
+  // rl.question here would just hang forever unattended (e.g. under
+  // launchd) with no way to ever recover. Fail loudly and immediately
+  // instead, with the actual fix: re-run once with --headed to refresh the
+  // saved session in the dedicated Chrome profile, then unattended headless
+  // runs work again until it expires next.
+  if (!HEADED) {
+    throw new Error("Zoom/Google is asking to sign in, but this is running headless (no visible window). Re-run with --headed once to log in interactively; the session will be saved and reused headlessly after that.");
+  }
   await rl.question(
     "\nA Chrome window has opened. If it's showing a Google/Zoom sign-in page, log in there now.\nPress Enter here once you're signed in and the page has loaded...\n"
   );
@@ -512,9 +529,27 @@ async function launchBrowser(config) {
 
   // Fallback: a separate, dedicated automation profile that logs in once and
   // persists thereafter (set chrome.useSystemProfile: false to use this).
+  //
+  // channel: "chrome" launches your actual installed Google Chrome app
+  // instead of Puppeteer's bundled "Chrome for Testing" binary. That bundled
+  // binary is what was causing repeated macOS TCC "Allow access" prompts
+  // (filesystem, sometimes Music) -- its binary identity changes whenever
+  // Puppeteer/its Chrome build gets updated, so macOS kept treating it as a
+  // "new" app needing fresh permission grants. Real Chrome is one stable,
+  // already-trusted, notarized binary, so this doesn't happen. Verified this
+  // doesn't require quitting your everyday Chrome first (unlike the
+  // useSystemProfile branch above): it's a completely separate profile
+  // directory, so Chrome runs it as an independent instance.
+  //
+  // headless (true unless --headed) means this no longer needs the laptop
+  // lid open -- verified both the login-state check and grabClipUrls' full
+  // play-and-capture-signed-src flow work identically headless. Only the
+  // very first login (or a re-login if the saved session ever expires) needs
+  // a visible window; see waitForLogin's headless guard above.
   fs.mkdirSync(config.chromeProfileDir, { recursive: true });
   return puppeteer.launch({
-    headless: false,
+    channel: "chrome",
+    headless: !HEADED,
     userDataDir: config.chromeProfileDir,
     defaultViewport: { width: 1280, height: 900 },
   });
