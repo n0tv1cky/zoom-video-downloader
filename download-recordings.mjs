@@ -471,8 +471,24 @@ async function downloadToFile(page, mp4Url, outputDir, fileName) {
   });
   if (!res.ok || !res.body) throw new Error(`Video download failed: HTTP ${res.status}`);
 
+  // Stream to a .partial sibling first, then rename onto the real path only
+  // once the transfer has fully succeeded. A killed/crashed/interrupted
+  // download (confirmed to happen -- see git history around 2026-08-25:
+  // a backgrounded run getting killed left a truncated 20-second file that
+  // the resume logic below then trusted as a complete download and uploaded
+  // as-is) now can only ever leave behind an orphaned .partial file, never a
+  // corrupt file at the path localFileExists checks -- even under a hard
+  // kill with no chance to run catch/cleanup, since the rename only happens
+  // after pipeline() has already resolved successfully.
   const targetPath = path.join(outputDir, fileName);
-  await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(targetPath));
+  const partialPath = `${targetPath}.partial`;
+  try {
+    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(partialPath));
+    fs.renameSync(partialPath, targetPath);
+  } catch (err) {
+    fs.rmSync(partialPath, { force: true });
+    throw err;
+  }
   return targetPath;
 }
 
