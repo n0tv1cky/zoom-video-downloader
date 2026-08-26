@@ -34,6 +34,12 @@
     "tokenFile": "~/.zoom-recordings-sync/google-oauth-token.json"
   },
 
+  "notifications": {
+    "toEmail": "<YOUR_INSTITUTE_EMAIL>",
+    "tokenFile": "~/.zoom-recordings-sync/gmail-token.json",
+    "note": "Separate Gmail-send-only OAuth token from googleOAuth above -- see lib/gmailAuth.mjs for why. from == to (own account)."
+  },
+
   "driveUpload": {
     "enabled": true,
     "rootFolderId": "<YOUR_DRIVE_ROOT_FOLDER_ID>",

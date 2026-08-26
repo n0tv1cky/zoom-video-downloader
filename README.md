@@ -187,26 +187,23 @@ node download-recordings.mjs --limit 1       # only process the first pending ro
 
 The whole point of the OAuth + dedicated Chrome profile setup above is that,
 once done once, the script needs no human present. `scripts/zoom-recordings/daily-check.sh`
-wraps it with AI supervision on top, and a macOS `launchd` LaunchAgent
+wraps it with a deterministic report step, and a macOS `launchd` LaunchAgent
 triggers it once a day with nobody watching:
 
 ```
 launchd (9:00 AM daily)
   -> ~/.zoom-recordings-sync/daily-check.sh
        -> caffeinate -i node download-recordings.mjs > last-sync-output.log
-            (runs synchronously in plain bash, no LLM involved, no
-             tool-call timeout to outrun -- see "Why the sync itself
-             doesn't run inside the Claude call" below)
-       -> claude -p "<prompt>" --remote-control zoom-recordings-daily \
-                                --permission-mode bypassPermissions \
-                                --allowedTools Bash,Read \
-                                --model claude-haiku-4-5-20251001
-            -> reads the already-finished log, diagnoses the outcome,
-               returns a plain-text summary (no tool call for this --
-               see "Notifications" below for why)
-       -> osascript sends that summary via iMessage to your phone
-            (plain AppleScript, no LLM involved in the send itself)
-       -> on failure, writes today's date to ~/.zoom-recordings-sync/retry-pending
+            (runs synchronously in plain bash -- no tool-call timeout to
+             outrun, see "Why the sync runs in bash, not an AI tool call"
+             below)
+       -> node send-report.mjs <exit-code> last-sync-output.log
+            -> parses the log's SUMMARY line / FAIL lines, classifies the
+               outcome against a small known set of non-transient error
+               strings, emails a report via Gmail API, and prints RETRY
+               or NO-RETRY (see "Reporting" below)
+       -> on failure + a RETRY verdict, writes today's date to
+          ~/.zoom-recordings-sync/retry-pending
 
 launchd (every 15 min, catches up on wake if it missed a tick asleep)
   -> ~/.zoom-recordings-sync/retry-if-needed.sh
@@ -214,16 +211,22 @@ launchd (every 15 min, catches up on wake if it missed a tick asleep)
        -> otherwise: consumes the flag, runs daily-check.sh --retry once
 ```
 
-**Why a wrapper around Claude Code instead of just running the script
-directly:** the raw script either succeeds or throws — there's nothing
-watching for "this succeeded but something about it looks off" (sheet
-columns renamed, a share link behaving unexpectedly, credentials that need
-refreshing). The wrapper gives an AI a chance to notice and explain that,
-rather than you finding out days later from a silent failure. It's
-deliberately *not* allowed to fix problems itself (`Write`/`Edit`/`NotebookEdit`
-are disallowed) — it diagnoses and notifies, you decide what to do about it.
+**This used to route through `claude -p` for both the diagnosis and the
+notification (iMessage via `osascript`).** Both are gone. The Claude call's
+only real job — read the finished log and decide if it looks OK, and
+whether a same-day retry is worth queuing — turned out to be plain
+pattern-matching against a small, closed set of error strings
+`download-recordings.mjs` itself throws, never something that actually
+needed LLM judgment. `send-report.mjs` does that matching directly now (see
+its `NON_TRANSIENT_PATTERNS` list), at zero token cost/latency and with no
+dependency on a `claude` install being present on whatever machine runs
+this. iMessage is gone too: it never actually alerts for a message sent to
+yourself (Apple suppresses the notification banner for that), so it was
+already just "check the log/Messages thread if you want to be sure" —
+email has no such suppression and shows up as a normal push notification.
 
-**Why the sync itself doesn't run inside the Claude call:** two earlier
+**Why the sync runs in bash, not an AI tool call (kept for the history —
+still true, just no longer relevant to notification):** two earlier
 versions had Claude invoke `download-recordings.mjs` itself via the Bash
 tool (first with the 60s default timeout, then the 600s max). Both broke
 the same way once a run had enough new recordings to legitimately take
@@ -234,11 +237,9 @@ session and kills the still-running sync mid-upload. Confirmed on
 2026-08-25: two downloads failed outright and a third finished downloading
 to disk but was killed before it could upload or even get written to the
 state file. This isn't a prompt-wording problem, it's a hard tool-timeout
-mechanic, so `daily-check.sh` now runs the sync as a plain synchronous bash
-command *before* ever calling `claude -p` — no timeout, no backgrounding
-possible — and Claude's job shrinks to reading the already-finished
-`~/.zoom-recordings-sync/last-sync-output.log` and summarizing it, which has
-no failure mode where ending its reply early loses work.
+mechanic, so the sync runs as a plain synchronous bash command with no
+timeout and no backgrounding possible, full stop — independent of whatever
+reads its log afterward.
 
 **Setup:**
 
@@ -284,54 +285,42 @@ launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync   # ok if this 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
 ```
 
-**Notifications:** the wrapper does *not* use Claude Code's `PushNotification`
-tool. Two things were tried and ruled out first:
-- `PushNotification` over `--remote-control`: real 9am unattended runs
-  logged "Remote Control is inactive" — `--remote-control [name]` is
-  documented as starting *an interactive session*, and that pairing doesn't
-  appear to reliably establish in time for a one-shot `-p` run. (Also
-  observed: the custom session name wasn't even honored under `-p` — it
-  showed up under an auto-generated name instead.)
-- iMessage-to-self via AppleScript: delivers fine (confirmed in `chat.db`),
-  but Apple suppresses the phone notification banner for a message sent to
-  yourself from one of your own signed-in devices — a deliberate anti-loop
-  behavior, not something a script can override.
-
-What actually works: Claude's `-p` run returns its diagnosis as plain text
-(no tool call — `--allowedTools Bash,Read` doesn't even grant it a way to
-send anything), and `daily-check.sh` sends *that* text via a plain
-`osascript`/AppleScript call to your phone number (`$PHONE_NUMBER` near the
-top of the script), completely outside the LLM call. This delivers the
-message reliably (confirmed via `chat.db`); you won't get an alert banner
-for it (same self-chat suppression as above), so check
-`~/.zoom-recordings-sync/daily-check.log` or the Messages thread with
-yourself if you want to be sure nothing broke, rather than relying on an
-alert. This also means the message-sending step costs no extra tokens
-beyond the diagnosis itself.
+**Reporting:** `send-report.mjs` reads `last-sync-output.log`, looks for the
+`SUMMARY: downloaded=N uploaded=N fail=N skip=N` line `download-recordings.mjs`
+prints at the end of a normal run (or, on a fatal crash with no such line, the
+last ~25 lines of the log plus any `FAIL` lines), and emails one plain-text
+report per run via the Gmail API to the address in `config.json`'s
+`notifications.toEmail` — subject line front-loads the outcome (e.g. `Zoom
+sync: 2 uploaded` or `Zoom sync FAILED (exit 1)`), so it's readable from a
+lock-screen notification banner alone. This uses its own Gmail-send-only
+OAuth token (`lib/gmailAuth.mjs`, `~/.zoom-recordings-sync/gmail-token.json`)
+kept deliberately separate from the Sheets/Drive token above — see that
+file's header comment for why (short version: adding a scope to an
+*existing* cached grant without `prompt: consent` silently keeps the old,
+narrower grant; a brand-new token file for a brand-new scope sidesteps that
+entirely). See `docs/email-notifications.md` for the general Gmail-API-send
+pattern this reuses.
 
 **Same-day retry:** the scheduled 9am run wraps the sync in `caffeinate -i`
 (blocks idle sleep only for that call, released automatically when it exits)
 after a 2026-08-20 run got killed mid-request by idle sleep and silently
 missed 2 real recordings — but that only covers idle sleep, not a manual
-lid-close. If the sync still fails for any reason, Claude reads its output
-(same diagnosis pass described above) and decides whether a retry could
-plausibly help: it tags its reply with a literal `[NO-RETRY]` when the
-failure looks non-transient (expired/invalid credentials, the sheet's
-columns/structure changed, something needing a real code fix) and leaves it
-off for anything that plausibly is transient (a network blip, a timeout, a
-Drive/Zoom hiccup) — `daily-check.sh` strips the tag before texting it
-(`$sms_text`) and greps for it to decide whether to write today's date to
-`~/.zoom-recordings-sync/retry-pending`. This is deliberately fail-open: an
-ambiguous or missing tag (including a Claude-side crash on top of the sync
-failure, where no valid JSON comes back at all) still defaults to *retrying*
-— an unneeded retry costs a few cents and 15 minutes, while wrongly
-suppressing a real one costs a full missed day, so the asymmetry favors
-retrying. This is the one piece of actual judgment Claude exercises in this
-whole pipeline (everything else is fixed bash logic); it's safe to hand it
-that judgment specifically because it's a bounded classification over an
-*already-finished* log, not the "operate a long-running process and decide
-when it's done" judgment that caused the backgrounding bug documented above
-— conflating those two kinds of judgment is exactly what broke twice.
+lid-close. If the sync still fails for any reason, `send-report.mjs` checks
+the log against `NON_TRANSIENT_PATTERNS` — a short list of exact error
+strings `download-recordings.mjs` itself throws for expired/invalid
+credentials, a missing scope, a broken Chrome profile sync, or a missing
+`oauth-client.json` — and prints `NO-RETRY` when one matches, `RETRY`
+otherwise. `daily-check.sh` captures that one line and writes today's date to
+`~/.zoom-recordings-sync/retry-pending` only on `RETRY`. This is deliberately
+fail-open: anything that *doesn't* match a known non-transient signature
+(a network blip, a timeout, a Drive/Zoom hiccup, Chrome closing unexpectedly,
+or genuinely novel breakage this list doesn't cover yet) defaults to
+*retrying* — an unneeded retry costs a few cents and 15 minutes, while
+wrongly suppressing a real one costs a full missed day, so the asymmetry
+favors retrying. If a new non-transient failure mode shows up in practice,
+add its error string to `NON_TRANSIENT_PATTERNS` in `send-report.mjs` rather
+than reaching for judgment-based classification again — every failure mode
+seen so far has had a fixed, matchable message.
 
 A second LaunchAgent (`com.n0tv1cky.zoom-recordings-retry.plist`) polls every
 15 minutes for the retry flag — there's no clean launchd "on wake" event, but

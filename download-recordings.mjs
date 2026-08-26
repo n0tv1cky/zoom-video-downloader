@@ -587,15 +587,22 @@ async function main() {
     return { session, fileName, courseFolderName, targetDir, targetPath, localFileExists, uploaded, needsDownload, needsUpload };
   });
 
+  // Tallied into a final `SUMMARY:` line so an unattended caller (see
+  // send-report.mjs) can classify the run's outcome by parsing one line
+  // instead of re-deriving counts from loosely-matched OK/FAIL/SKIP text.
+  const counts = { downloaded: 0, uploaded: 0, fail: 0, skip: 0 };
+
   for (const p of plan) {
     if (!p.needsDownload && !p.needsUpload) {
       console.log(`SKIP  (${p.localFileExists ? "already done" : "uploaded, local copy removed"}) ${p.fileName}`);
+      counts.skip++;
     }
   }
 
   const pending = plan.filter((p) => p.needsDownload || p.needsUpload).slice(0, LIMIT);
   if (pending.length === 0) {
     console.log("Nothing to do.");
+    console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip}`);
     return;
   }
 
@@ -622,6 +629,7 @@ async function main() {
     };
     saveState(config.stateFile, state);
     console.log(`OK    ${uploaded.webViewLink}`);
+    counts.uploaded++;
 
     // Only delete after the upload above has actually succeeded (we're past
     // any throw at this point) and been recorded in stateFile -- never as a
@@ -639,6 +647,7 @@ async function main() {
     console.error(`FAIL  (${phase}) ${p.fileName}: ${err.message}`);
     state[p.session.stateKey] = { ...state[p.session.stateKey], [phase]: { status: "failed", error: err.message, at: new Date().toISOString() } };
     saveState(config.stateFile, state);
+    counts.fail++;
   }
 
   // Sessions that already have a local file but only need uploading don't
@@ -653,7 +662,10 @@ async function main() {
   }
 
   const toDownload = pending.filter((p) => p.needsDownload);
-  if (toDownload.length === 0) return;
+  if (toDownload.length === 0) {
+    console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip}`);
+    return;
+  }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const browser = await launchBrowser(config);
@@ -702,6 +714,7 @@ async function main() {
           state[p.session.stateKey] = { ...state[p.session.stateKey], download: { status: "downloaded", file: savedPath, at: new Date().toISOString() } };
           saveState(config.stateFile, state);
           console.log(`OK    ${savedPath}`);
+          counts.downloaded++;
         } catch (err) {
           recordFailure(p, "download", err);
           continue;
@@ -717,6 +730,8 @@ async function main() {
     rl.close();
     await browser.close();
   }
+
+  console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip}`);
 }
 
 main().catch((err) => {

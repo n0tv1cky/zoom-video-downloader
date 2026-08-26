@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the Zoom recordings sync under AI supervision, unattended (launchd).
+# Runs the Zoom recordings sync unattended (launchd), then emails a report.
 #
 # DEPLOYED COPY: launchd actually executes ~/.zoom-recordings-sync/daily-check.sh,
 # not this file. macOS TCC blocks background (non-GUI) processes from executing
@@ -7,80 +7,35 @@
 # Re-run this after editing this file:
 #   cp scripts/zoom-recordings/daily-check.sh ~/.zoom-recordings-sync/daily-check.sh
 #
-# Unlike running download-recordings.mjs directly, this gives Claude judgment
-# on top of the fixed script: after the sync itself has already run (see
-# "THE SYNC RUNS DIRECTLY IN BASH" below for why Claude doesn't invoke it),
-# Claude reads its output and diagnoses the outcome (what synced, or what
-# broke and why) in plain text, rather than either staying silent or failing
-# invisibly in a log nobody checks. It does not attempt to silently fix or
-# rewrite code itself, by design: --allowedTools below only grants Bash (to
-# inspect logs/state) and Read -- no Write/Edit/NotebookEdit, so this is
-# meant to catch and explain problems, and report -- not to patch things
-# without you seeing. Restricting to exactly these tools (rather than just
-# excluding the write-capable ones) also shrinks the system prompt's
-# tool-schema section, which is most of every run's token cost since each
-# run is a fresh, uncached session.
+# THIS USED TO SHELL OUT TO `claude -p` TO SUMMARIZE THE LOG AND SEND AN
+# iMESSAGE. Both are gone. Two independent reasons:
 #
-# Sending the actual phone notification is NOT one of Claude's tools here --
-# the PushNotification tool turned out not to reliably reach the phone from
-# an unattended `-p` run (its Remote Control pairing appears to need an
-# interactive session; see git history for the debugging). iMessage-to-self
-# doesn't alert either (Apple suppresses notifications for messages sent to
-# yourself from one of your own signed-in devices). Both would also cost
-# tokens as an extra tool call. Instead, Claude just returns its summary as
-# plain text (.result below), and this script sends *that* via `osascript`
-# directly -- a deterministic bash step, zero extra tokens, no LLM involved
-# in the send itself.
+# 1. iMessage-to-self silently doesn't alert (Apple suppresses notifications
+#    for messages sent to yourself from one of your own signed-in devices),
+#    and PushNotification/Remote Control wasn't reliably reachable from an
+#    unattended `-p` run either (its pairing needs an interactive session).
+#    Email has none of these delivery quirks.
+# 2. The Claude call's only real job -- read the finished log, summarize it,
+#    and decide if a same-day retry is worth queuing -- turned out to be
+#    plain pattern-matching against a small, closed set of error strings
+#    download-recordings.mjs itself throws, not something that ever actually
+#    needed LLM judgment. send-report.mjs does that matching directly now
+#    (see its NON_TRANSIENT_PATTERNS list), at zero cost/latency and with no
+#    dependency on a `claude` install or API key on this machine.
 #
-# --remote-control gives this session a stable, named Remote Control
-# connection so the run is viewable/attachable from the Claude Code mobile
-# app while or after it runs -- unrelated to the notification path above.
-#
-# --model pins this to Haiku 4.5 rather than the default Sonnet. The task is
-# mechanical (run a script, read its output, send one notification) and
-# doesn't need Sonnet-level reasoning; Haiku is priced substantially lower
-# per token, and since token *volume* here is mostly fixed system-prompt
-# overhead (not task complexity), per-token price is the main lever left to
-# cut cost. Trade-off: if something genuinely novel breaks (not a known
-# failure mode), Haiku's diagnosis in the notification may be less sharp --
-# acceptable here since it still can't touch code either way, only report.
-#
-# SAME-DAY RETRY: if today's scheduled (non-retry) run fails, it *usually*
-# writes today's date to $RETRY_FLAG below. retry-if-needed.sh (its own
-# launchd job, see com.n0tv1cky.zoom-recordings-retry.plist) checks that flag
-# on a timer that also catches up right after the Mac wakes from sleep, and
-# if it's set for today, calls this script again with --retry. A --retry run
-# does NOT re-arm the flag on failure, so this is at most one extra attempt
-# per day -- a second same-day failure is left for tomorrow's normal
-# scheduled run (state file already makes that safe/idempotent; see README).
-#
-# "Usually" because whether to retry at all is Claude's call, not a blind
-# reaction to a non-zero exit code -- see NO-RETRY TAGGING below. This is the
-# one piece of judgment Claude actually exercises here (everything else
-# below is fixed bash logic); it's a bounded, already-finished-log
-# classification, not the kind of "operate a long-running process and decide
-# when it's done" judgment that caused the backgrounding bug above -- that
-# distinction is why this is safe to hand to the same Haiku call that's
-# already writing the diagnosis, at no extra cost.
-#
-# THE SYNC RUNS DIRECTLY IN BASH, NOT AS SOMETHING CLAUDE INVOKES. Two
-# earlier designs had Claude run download-recordings.mjs itself via the Bash
-# tool, and both broke the same way: the sync can legitimately take longer
-# than any Bash-tool timeout (tried 60s, then the 600s max), the tool call
-# gets backgrounded, and Haiku declared "waiting for completion"/"monitor
-# streaming" as its FINAL reply instead of actually blocking on the result --
-# which ends the `-p` session and kills the still-running sync mid-upload
-# (confirmed via the state file: downloads left half-finished, one file
-# orphaned on disk with no state entry at all, on 2026-08-25). No prompt
-# wording fixed this reliably because it's not a judgment call, it's a hard
-# tool-timeout mechanic. So the sync now runs as a plain synchronous bash
-# command below -- no timeout, no backgrounding possible -- and Claude's job
-# shrinks to reading the *already-finished* output and summarizing it, which
-# has no failure mode where ending its reply early loses work.
+# THE SYNC STILL RUNS DIRECTLY IN BASH, NOT VIA ANY AI TOOL CALL. An earlier
+# design had Claude run download-recordings.mjs itself via its Bash tool, and
+# broke twice the same way: the sync can legitimately outrun any Bash-tool
+# timeout (tried 60s, then the 600s max), the tool call gets backgrounded,
+# and the model declared "waiting for completion" as its FINAL reply instead
+# of blocking on the result -- which ended the session and killed the
+# still-running sync mid-upload (confirmed via the state file: downloads left
+# half-finished, one file orphaned on disk with no state entry at all, on
+# 2026-08-25). Running the sync as a plain synchronous bash command has no
+# such timeout and no such failure mode.
 
 set -euo pipefail
 
-PHONE_NUMBER="+919148786777"
 RETRY_FLAG=~/.zoom-recordings-sync/retry-pending
 SYNC_LOG=~/.zoom-recordings-sync/last-sync-output.log
 is_retry=false
@@ -107,88 +62,36 @@ caffeinate -i node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recor
 sync_exit=$?
 set -e
 
-PROMPT="The Zoom recordings sync already ran (in plain bash, not something you need to invoke) and finished with exit code $sync_exit. Its full output is at $SYNC_LOG -- read that file to see what happened.
+echo "----- sync finished (exit $sync_exit); generating report -----"
 
-Reply with a single plain-text summary, under 200 characters, leading with the actionable part -- this is the only output that reaches me (I am not watching this run), so do not just describe what you would do, actually state the outcome:
-- If it completed cleanly (nothing new, or everything downloaded/uploaded without error): a short one-line summary, e.g. \"Zoom sync: 2 new recordings uploaded\" or \"Zoom sync: nothing new today.\"
-- If something failed or looked wrong (auth/credential error, the recordings sheet or schedule sheet structure looks different than expected, a Zoom share link behaves unexpectedly, the Drive upload fails, etc.): spend a little time investigating why first -- check the log, check recent entries in the state file (~/.zoom-recordings-sync/*-state.json), check whether the sheet columns/format changed -- then summarize what broke and what I need to do about it.
-
-If (and only if) exit code $sync_exit is non-zero, end your reply with the literal tag \"[NO-RETRY]\" (nothing after it) IF this looks like something an automatic same-day retry would NOT fix -- expired/invalid credentials, an auth prompt, the sheet's columns/structure changed, code that needs a real fix, or anything else where retrying in 15-60 minutes would just fail the same way. Leave the tag off for anything that plausibly IS transient (a network blip, a timeout, a Drive/Zoom hiccup, Chrome closing unexpectedly) -- those get retried automatically, and \"not sure\" should also default to leaving the tag off, since an unnecessary retry costs a few cents and 15 minutes, while wrongly suppressing a real retry costs a full missed day. The tag counts toward your 200-character budget.
-
-Do not modify any files or code -- only diagnose and report. Do not send any notification yourself -- just return the summary as your final reply."
-
-# --output-format json (instead of text) gives us the same final summary via
-# .result, plus token usage and cost -- so the log can show both without a
-# second, separate lookup into ~/.claude/projects/*/*.jsonl afterward.
-#
-# Not `claude -p ... || exit 1`: that would skip the "run end" timestamp
-# below on failure, right when the log needs it most. Capture the exit code
-# instead, always log the end marker, then propagate the code afterward.
-#
-# This call is now purely diagnostic (read a finished log, reply) -- no
-# reason to expect it to run long enough to hit a Bash-tool timeout, but the
-# exit code still gets checked below the same way as before regardless.
+# send-report.mjs reads $SYNC_LOG, emails a report, and prints exactly one
+# line -- RETRY or NO-RETRY -- which is all we consume from stdout here.
+# Its own diagnostic/warning output goes to stderr so it shows up in this
+# log without contaminating that one line.
 set +e
-raw_output=$(claude -p "$PROMPT" \
-  --remote-control zoom-recordings-daily \
-  --permission-mode bypassPermissions \
-  --allowedTools "Bash,Read" \
-  --model claude-haiku-4-5-20251001 \
-  --output-format json)
-claude_exit=$?
+retry_verdict=$(node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/send-report.mjs "$sync_exit" "$SYNC_LOG" $($is_retry && echo --retry))
+report_exit=$?
 set -e
-# The sync itself failing is the real signal for the retry mechanism below --
-# a Claude-side error (e.g. it crashed) shouldn't mask a sync that actually
-# succeeded, and vice versa.
-if [ "$sync_exit" -ne 0 ] && [ "$claude_exit" -eq 0 ]; then claude_exit=$sync_exit; fi
+echo "Report verdict: ${retry_verdict:-<none, report script failed with exit $report_exit>}"
 
-if echo "$raw_output" | jq -e . >/dev/null 2>&1; then
-  summary=$(echo "$raw_output" | jq -r '.result')
-  echo "$summary"
-  echo "$raw_output" | jq -r '
-    "[tokens] input=\(.usage.input_tokens) output=\(.usage.output_tokens) " +
-    "cache_creation=\(.usage.cache_creation_input_tokens) cache_read=\(.usage.cache_read_input_tokens) " +
-    "cost_usd=\(.total_cost_usd) session=\(.session_id)"
-  '
-else
-  # claude didn't return valid JSON (e.g. crashed before producing output) --
-  # fall back to logging whatever it did print, raw, and send that instead.
-  # No [NO-RETRY] tag can appear here, which is what we want: a Claude-side
-  # crash on top of a sync failure is itself ambiguous, and the fail-open
-  # default below (retry unless explicitly told not to) still applies.
-  summary="$raw_output"
-  echo "$summary"
-fi
-
-# NO-RETRY TAGGING: strip the tag before texting it (it's a machine signal
-# for the block below, not something worth reading on your phone) but keep
-# it in $summary for the log line above and the grep below.
-sms_text=$(echo "$summary" | sed -E 's/[[:space:]]*\[NO-RETRY\][[:space:]]*$//')
-
-# Plain AppleScript send, no LLM/tool call involved -- see the comment block
-# up top for why this replaced PushNotification and iMessage-to-self alerts.
-# Passed as script arguments (not interpolated into the AppleScript source)
-# so nothing in $sms_text needs shell/AppleScript quote-escaping.
-osascript \
-  -e 'on run {msg, num}' \
-  -e 'tell application "Messages" to send msg to buddy num of service 1' \
-  -e 'end run' \
-  -- "$sms_text" "$PHONE_NUMBER" >/dev/null 2>&1 \
-  || echo "WARN: failed to send iMessage notification"
-
-# Retry is gated on the SYNC failing (not claude_exit -- a Claude-side
-# hiccup while diagnosing a successful sync shouldn't queue a pointless
-# retry) and on Claude's own [NO-RETRY] classification, fail-open: retry
-# unless explicitly told not to. See "SAME-DAY RETRY" and "NO-RETRY TAGGING"
-# up top for why defaulting to retry is the safe direction here.
+# SAME-DAY RETRY: if today's scheduled (non-retry) run fails and send-report
+# didn't classify it as NO-RETRY-worthy (fail-open default: retry unless
+# it's a known non-transient failure), write today's date to $RETRY_FLAG.
+# retry-if-needed.sh (its own launchd job, see
+# com.n0tv1cky.zoom-recordings-retry.plist) checks that flag on a timer that
+# also catches up right after the Mac wakes from sleep, and if it's set for
+# today, calls this script again with --retry. A --retry run does NOT re-arm
+# the flag on failure, so this is at most one extra attempt per day -- a
+# second same-day failure is left for tomorrow's normal scheduled run (state
+# file already makes that safe/idempotent; see README).
 if [ "$sync_exit" -ne 0 ] && ! $is_retry; then
-  if echo "$summary" | grep -qF '[NO-RETRY]'; then
-    echo "No same-day retry queued -- Claude judged this non-transient (see summary above); tomorrow's scheduled run will try again."
-  else
+  if [ "$retry_verdict" = "RETRY" ]; then
     date +%F > "$RETRY_FLAG"
     echo "Same-day retry queued (fires next wake/check via retry-if-needed.sh)."
+  else
+    echo "No same-day retry queued -- tomorrow's scheduled run will try again."
   fi
 fi
 
-echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end${retry_tag} (exit $claude_exit) ====="
-exit $claude_exit
+echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end${retry_tag} (exit $sync_exit) ====="
+exit $sync_exit
