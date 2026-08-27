@@ -3,6 +3,20 @@
 
   "dailyRunTime": "09:00",
 
+  "timeSlots": {
+    "note": "Used only to narrow the search window for continuous-recording splitting (see docs/continuous-recording-splitting.md) -- never as the cut point itself. Duplicated from the sibling attendance/calendar-sync projects' own timeSlots, deliberately not shared -- keep in sync by hand if the schedule ever changes.",
+    "weekday": [
+      { "label": "Session-I", "start": "19:00", "end": "20:00" },
+      { "label": "Session-II", "start": "20:15", "end": "21:15" }
+    ],
+    "weekend": [
+      { "label": "Session-I", "start": "10:45", "end": "11:45" },
+      { "label": "Session-II", "start": "12:00", "end": "13:00" },
+      { "label": "Session-III", "start": "14:45", "end": "15:45" },
+      { "label": "Session-IV", "start": "16:00", "end": "17:00" }
+    ]
+  },
+
   "recordingsSheet": {
     "id": "<YOUR_RECORDINGS_SHEET_ID>",
     "gid": "0"

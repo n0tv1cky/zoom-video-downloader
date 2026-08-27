@@ -26,6 +26,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { mergeLocalConfig } from "./lib/configLocal.mjs";
+import { probeDurationSeconds, detectSilenceGaps, pickCutPoints, splitByCutPoints } from "./lib/continuousSplit.mjs";
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes("--dry-run");
@@ -194,6 +195,58 @@ function formatDate(value) {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+// "7:00pm to 9:15pm" -> { startMin: 1140, endMin: 1275 } (minutes since
+// midnight). Matches this sheet's observed "Time" column format exactly
+// (no leading zero, lowercase am/pm, no space before it) -- returns null on
+// anything else rather than guessing.
+function parseTimeRange(timeStr) {
+  const m = String(timeStr ?? "")
+    .trim()
+    .match(/^(\d{1,2}):(\d{2})(am|pm)\s+to\s+(\d{1,2}):(\d{2})(am|pm)$/i);
+  if (!m) return null;
+  const toMinutes = (h, mm, ampm) => {
+    let hour = parseInt(h, 10) % 12;
+    if (ampm.toLowerCase() === "pm") hour += 12;
+    return hour * 60 + parseInt(mm, 10);
+  };
+  return { startMin: toMinutes(m[1], m[2], m[3]), endMin: toMinutes(m[4], m[5], m[6]) };
+}
+
+// Same Sheets-serial-to-Date logic as formatDate below, just exposed for
+// day-of-week rather than a date string.
+function dayType(dateValue) {
+  const d = typeof dateValue === "number" ? new Date(SHEETS_EPOCH_MS + dateValue * 86_400_000) : new Date(dateValue);
+  const day = d.getUTCDay(); // 0 = Sunday, 6 = Saturday
+  return day === 0 || day === 6 ? "weekend" : "weekday";
+}
+
+// Returns the official duration (minutes) of each of `groupSize` sessions
+// sharing one continuous recording, in session order -- used only to weight
+// where a split boundary is *expected* to fall (see pickCutPoints in
+// lib/continuousSplit.mjs), never as the cut point itself. Falls back to
+// null (equal weighting) when the schedule can't be matched confidently --
+// this only narrows a search window, so an imprecise fallback here just
+// means a slightly wider effective search, not a wrong cut.
+function resolveSessionDurationsMinutes(row, groupSize, timeSlots) {
+  const slots = timeSlots?.[dayType(row.date)];
+  const range = parseTimeRange(row.time);
+  if (!slots || !range) return null;
+
+  // Slot start/end in config.json are plain "HH:MM" 24h strings, not the
+  // am/pm sheet format -- parse those directly rather than reusing
+  // parseTimeRange (which expects am/pm).
+  const toMinutes24 = (hhmm) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+
+  const anchorIdx = slots.findIndex((s) => Math.abs(toMinutes24(s.start) - range.startMin) <= 5);
+  const start = anchorIdx === -1 ? 0 : anchorIdx;
+  const candidate = slots.slice(start, start + groupSize);
+  if (candidate.length !== groupSize) return null;
+  return candidate.map((s) => toMinutes24(s.end) - toMinutes24(s.start));
 }
 
 function buildFileName(template, row) {
@@ -571,6 +624,19 @@ async function main() {
       (sessions.length !== rows.length ? ` (${sessions.length} sessions after splitting combined-link rows).` : ".")
   );
 
+  // All sessions sharing one Zoom link, keyed by link -- includes sessions
+  // that are already fully uploaded, unlike `pending`/`toDownload` below.
+  // Needed because a continuous (never stopped/restarted) recording can
+  // mean session 1 already got uploaded as the WHOLE recording (mislabeled)
+  // before this file existed to fix that -- detecting and correcting that
+  // requires seeing every session for the link, not just the still-pending
+  // ones. See handleContinuousRecording below.
+  const sessionsByLink = new Map();
+  for (const s of sessions) {
+    if (!sessionsByLink.has(s.link)) sessionsByLink.set(s.link, []);
+    sessionsByLink.get(s.link).push(s);
+  }
+
   const plan = sessions.map((session) => {
     const fileName = buildFileName(config.fileNameTemplate, session);
     const courseFolderName = courseFolder(session.subjectCode);
@@ -579,22 +645,32 @@ async function main() {
     const entry = state[session.stateKey] ?? {};
     const localFileExists = fs.existsSync(targetPath);
     const uploaded = !config.driveUpload.enabled || entry.upload?.status === "uploaded";
+    // A session stuck needing a human to pick the split point (see
+    // handleContinuousRecording / docs/continuous-recording-splitting.md)
+    // must not be treated as needing a normal (re-)download or upload --
+    // there's no clip to fetch and no local file to upload until
+    // confirm-split.mjs resolves it.
+    const pendingManualSplit = entry.download?.status === "pending-manual-split";
     // A session only needs re-fetching from Zoom if we don't have the file
     // locally AND we don't have a durable copy on Drive either. Once
     // uploaded, deleteLocalAfterUpload may have removed the local file on
     // purpose -- that's not "missing," it's "no longer needed."
-    const needsDownload = !localFileExists && !uploaded;
-    const needsUpload = config.driveUpload.enabled && !uploaded;
-    return { session, fileName, courseFolderName, targetDir, targetPath, localFileExists, uploaded, needsDownload, needsUpload };
+    const needsDownload = !localFileExists && !uploaded && !pendingManualSplit;
+    const needsUpload = config.driveUpload.enabled && !uploaded && !pendingManualSplit;
+    return { session, fileName, courseFolderName, targetDir, targetPath, localFileExists, uploaded, pendingManualSplit, needsDownload, needsUpload };
   });
+  const planByStateKey = new Map(plan.map((p) => [p.session.stateKey, p]));
 
   // Tallied into a final `SUMMARY:` line so an unattended caller (see
   // send-report.mjs) can classify the run's outcome by parsing one line
   // instead of re-deriving counts from loosely-matched OK/FAIL/SKIP text.
-  const counts = { downloaded: 0, uploaded: 0, fail: 0, skip: 0 };
+  const counts = { downloaded: 0, uploaded: 0, fail: 0, skip: 0, pendingSplit: 0 };
 
   for (const p of plan) {
-    if (!p.needsDownload && !p.needsUpload) {
+    if (p.pendingManualSplit) {
+      console.log(`SKIP  (pending manual split -- run confirm-split.mjs ${p.session.stateKey}) ${p.fileName}`);
+      counts.pendingSplit++;
+    } else if (!p.needsDownload && !p.needsUpload) {
       console.log(`SKIP  (${p.localFileExists ? "already done" : "uploaded, local copy removed"}) ${p.fileName}`);
       counts.skip++;
     }
@@ -603,7 +679,7 @@ async function main() {
   const pending = plan.filter((p) => p.needsDownload || p.needsUpload).slice(0, LIMIT);
   if (pending.length === 0) {
     console.log("Nothing to do.");
-    console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip}`);
+    console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip} pendingSplit=${counts.pendingSplit}`);
     return;
   }
 
@@ -651,6 +727,153 @@ async function main() {
     counts.fail++;
   }
 
+  // Handles the case where a shared Zoom link's recording was never
+  // stopped/restarted between the classes it covers, so Zoom reports a
+  // single clip where N sessions were expected (see
+  // docs/continuous-recording-splitting.md for the full design). Downloads
+  // the one clip once, finds a real inter-class silence gap inside a
+  // schedule-derived search window per boundary, and splits+uploads
+  // automatically when confident. `fullGroup` is every session sharing this
+  // link (via sessionsByLink), not just the still-pending ones -- a session
+  // already marked uploaded before this feature existed may actually hold
+  // the WHOLE continuous recording mislabeled as just its own session (this
+  // is exactly what happened live on 2026-08-27), so correcting it means
+  // re-deriving and re-uploading that session too, then removing the old,
+  // wrong Drive file.
+  async function handleContinuousRecording(link, fullGroup, clipUrl) {
+    const plans = fullGroup.map((s) => planByStateKey.get(s.stateKey));
+    plans.sort((a, b) => a.session.clipIndex - b.session.clipIndex);
+
+    console.log(`Continuous recording detected -- no stop/restart between ${plans.length} sessions. Downloading once and splitting locally.`);
+
+    const rawDir = plans[0].targetDir;
+    fs.mkdirSync(rawDir, { recursive: true });
+    const rawFileName = `RAW_${plans.map((p) => slug(p.session.subjectCode)).join("_")}_${formatDate(plans[0].session.date)}.mp4`;
+
+    // Reuse an already-downloaded raw file rather than re-fetching it -- if
+    // a previous attempt got this far but failed during splitting/upload
+    // (e.g. a session's own output folder didn't exist yet, hit live
+    // 2026-08-27), there's no reason to re-download 2+ hours of video for a
+    // retry that only needs the split/upload steps redone.
+    const expectedRawPath = path.join(rawDir, rawFileName);
+    let rawPath;
+    if (fs.existsSync(expectedRawPath)) {
+      console.log(`Reusing already-downloaded raw file -> ${expectedRawPath}`);
+      rawPath = expectedRawPath;
+    } else {
+      try {
+        rawPath = await downloadToFile(page, clipUrl, rawDir, rawFileName);
+      } catch (err) {
+        for (const p of plans) recordFailure(p, "download", err);
+        return;
+      }
+    }
+
+    let durationSec, cutPoints;
+    try {
+      durationSec = probeDurationSeconds(rawPath);
+      const sessionDurationsMin = resolveSessionDurationsMinutes(plans[0].session, plans.length, config.timeSlots) ?? plans.map(() => 1);
+      const silenceGaps = detectSilenceGaps(rawPath);
+      cutPoints = pickCutPoints({ durationSec, sessionDurationsMin, silenceGaps, windowMin: 10 });
+    } catch (err) {
+      for (const p of plans) recordFailure(p, "download", err);
+      return;
+    }
+
+    if (cutPoints.some((c) => !c.confident)) {
+      console.log(
+        `No confident silence gap found for at least one boundary -- leaving ${plans.length} session(s) pending-manual-split. Run confirm-split.mjs once with a real timestamp to finish.`
+      );
+      // Self-contained on purpose: confirm-split.mjs only needs to be given
+      // one stateKey from this group and can read everything else (the raw
+      // file, every session's own output path, and Drive upload details) off
+      // this one state entry -- no need to re-fetch/re-parse the recordings
+      // sheet just to finish a split that's otherwise fully determined.
+      const groupStateKeys = plans.map((p) => p.session.stateKey);
+      for (const p of plans) {
+        state[p.session.stateKey] = {
+          ...state[p.session.stateKey],
+          download: {
+            status: "pending-manual-split",
+            rawFile: rawPath,
+            groupStateKeys,
+            targetPaths: plans.map((q) => q.targetPath),
+            fileNames: plans.map((q) => q.fileName),
+            courseFolderNames: plans.map((q) => q.courseFolderName),
+            proposedCutsSeconds: cutPoints.map((c) => c.cutSeconds),
+            searchWindows: cutPoints.map((c) => [c.windowStart, c.windowEnd]),
+            at: new Date().toISOString(),
+          },
+        };
+      }
+      saveState(config.stateFile, state);
+      counts.pendingSplit += plans.length;
+      return;
+    }
+
+    const cutSeconds = cutPoints.map((c) => c.cutSeconds);
+    console.log(`Splitting at ${cutSeconds.map((s) => s.toFixed(1)).join("s, ")}s (silence-detected, confident)`);
+    // Each session can be a different subject/course folder (e.g.
+    // DSM-101/DSM-102) -- only rawDir (the first session's folder) was
+    // guaranteed to exist above, so ffmpeg would fail writing into any
+    // other session's not-yet-created folder (hit live 2026-08-27).
+    for (const p of plans) fs.mkdirSync(p.targetDir, { recursive: true });
+    try {
+      splitByCutPoints(rawPath, cutSeconds, plans.map((p) => p.targetPath));
+    } catch (err) {
+      for (const p of plans) recordFailure(p, "download", err);
+      return;
+    }
+
+    for (const p of plans) {
+      state[p.session.stateKey] = { ...state[p.session.stateKey], download: { status: "downloaded", file: p.targetPath, splitFrom: rawFileName, at: new Date().toISOString() } };
+      saveState(config.stateFile, state);
+      console.log(`OK    ${p.targetPath}`);
+      counts.downloaded++;
+    }
+    fs.rmSync(rawPath, { force: true });
+
+    for (const p of plans) {
+      if (!config.driveUpload.enabled) continue;
+      const priorUpload = state[p.session.stateKey]?.upload;
+      try {
+        console.log(`Uploading -> Drive/${config.driveUpload.termFolderName}/${p.courseFolderName}/${p.fileName}`);
+        const uploaded = await uploadToDrive(drive, config.driveUpload, termFolderId, p.courseFolderName, p.targetPath, p.fileName);
+        state[p.session.stateKey] = {
+          ...state[p.session.stateKey],
+          upload: { status: "uploaded", fileId: uploaded.id, webViewLink: uploaded.webViewLink, at: new Date().toISOString() },
+        };
+        saveState(config.stateFile, state);
+        console.log(`OK    ${uploaded.webViewLink}`);
+        counts.uploaded++;
+
+        // A prior upload for this exact session, from before this feature
+        // existed, was actually the whole continuous recording mislabeled as
+        // just this session (confirmed live 2026-08-27) -- now that we have
+        // the correctly trimmed file, remove that stale/wrong Drive file
+        // rather than leaving both versions there.
+        if (priorUpload?.status === "uploaded" && priorUpload.fileId && priorUpload.fileId !== uploaded.id) {
+          try {
+            await drive.files.delete({ fileId: priorUpload.fileId });
+            console.log(`Removed previous (incorrect, full-length) upload: ${priorUpload.fileId}`);
+          } catch (err) {
+            console.error(`WARN: failed to delete stale upload ${priorUpload.fileId}: ${err.message}`);
+          }
+        }
+
+        if (config.driveUpload.deleteLocalAfterUpload) {
+          fs.rmSync(p.targetPath, { force: true });
+          console.log(`Removed local copy (kept on Drive): ${p.targetPath}`);
+          try {
+            fs.rmdirSync(p.targetDir);
+          } catch {}
+        }
+      } catch (err) {
+        recordFailure(p, "upload", err);
+      }
+    }
+  }
+
   // Sessions that already have a local file but only need uploading don't
   // need a browser at all -- handle those first without paying for a Chrome
   // launch.
@@ -664,7 +887,7 @@ async function main() {
 
   const toDownload = pending.filter((p) => p.needsDownload);
   if (toDownload.length === 0) {
-    console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip}`);
+    console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip} pendingSplit=${counts.pendingSplit}`);
     return;
   }
 
@@ -694,6 +917,20 @@ async function main() {
         clips = await grabClipUrls(page, link, rl);
       } catch (err) {
         for (const p of group) recordFailure(p, "download", err);
+        continue;
+      }
+
+      // Zoom reporting exactly 1 clip where more than 1 session was expected
+      // means nobody stopped/restarted the recording between classes -- a
+      // genuine single continuous recording, not a partial multi-clip
+      // glitch (which would instead show up as some clips found, just fewer
+      // than expected, still handled as a per-session failure below). Use
+      // the FULL session group for this link (every session sharing it,
+      // including ones already uploaded), not just `group` (only the
+      // still-pending ones) -- see handleContinuousRecording's comment.
+      const fullGroup = sessionsByLink.get(link) ?? group.map((p) => p.session);
+      if (clips.length === 1 && fullGroup.length > 1) {
+        await handleContinuousRecording(link, fullGroup, clips[0]);
         continue;
       }
 
@@ -732,7 +969,7 @@ async function main() {
     await browser.close();
   }
 
-  console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip}`);
+  console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip} pendingSplit=${counts.pendingSplit}`);
 }
 
 main().catch((err) => {

@@ -1,12 +1,16 @@
-# Splitting a continuous recording into its two sessions (plan)
+# Splitting a continuous recording into its two sessions
 
-**Status: planned, not yet implemented.** Written down before building so the
-design is settled first — this is the spec `download-recordings.mjs` /
-`send-report.mjs` should be built against, not yet what the code does.
+**Status: implemented (2026-08-27)** in `download-recordings.mjs`
+(`handleContinuousRecording`), `lib/continuousSplit.mjs`, and
+`confirm-split.mjs`. This doc was written as the spec before building; see
+"Implementation notes" at the bottom for what actually shipped and where it
+differs in small ways from the original plan below (the design itself held
+up — the differences are real bugs found while verifying against the actual
+stuck 2026-08-27 recording, not a change of approach).
 
 ## The problem
 
-`scripts/zoom-recordings` already handles one combined-recording shape: a
+This repo already handles one combined-recording shape: a
 row like `DSM 101 (5)/DSM 102 (2)` sharing a single Zoom share link because
 the presenter stopped and restarted the recording between the two classes,
 producing two separate clips inside Zoom's own multi-clip player.
@@ -158,15 +162,53 @@ this exact tradeoff for `subjectCodeMap` and applies the same way here):
 This is used only to pick a search window for silence detection, never as
 the cut point directly — see "Finding the cut point" above.
 
-## Open implementation notes (to resolve while building, not blocking the plan)
+## Implementation notes (2026-08-27, from actually building and verifying this)
 
-- Exact `silencedetect` thresholds (`-35dB`, `d=1`) are a starting guess —
-  worth tuning against a real example or two once this is built, since
-  Zoom's own noise floor/background hum could push a sensible threshold
-  either direction.
-- Whether to cut at a silence interval's midpoint, start, or end needs
-  eyeballing against a real split — whichever avoids clipping either
-  session's actual speech.
-- `-c copy`'s keyframe-boundary snapping might need a precise fallback (a
-  short re-encode of just the boundary segment) if it turns out to land
-  noticeably off from the chosen timestamp in practice.
+- **`-35dB`/`d=1` worked on the first real try**, against the actual stuck
+  2026-08-27 `DSM 101 (5)/DSM 102 (2)` recording (2h05m28s) — found a
+  confident silence gap and cut at 3612.9s (~60:13), right around the
+  official Session-I/Session-II boundary. Not re-tuned since it worked;
+  revisit if a future real recording comes back `confident: false` when it
+  shouldn't.
+- **Cutting at the silence interval's midpoint** was the choice made (not
+  start or end) — untested against an example where this actually clips
+  something, but splits into on the order of a minute either side, giving
+  a comfortable buffer either direction.
+- **`-c copy` was accurate enough** on the real file — no keyframe-snapping
+  fallback needed. Verified via output file sizes (~123MB and ~123.6MB,
+  matching a roughly even ~60/~65 minute split of the 125.5-minute total).
+- **A session already uploaded before this feature existed can be holding
+  the WRONG content** — confirmed live: `DSM 101 (5)`'s pre-existing Drive
+  upload was actually the *entire* 2h05m recording (both sessions),
+  because the old code just took Zoom's one-and-only clip URL and uploaded
+  it under session 1's name. `handleContinuousRecording` therefore always
+  operates on the **full session group for the link** (`sessionsByLink`,
+  built from every session, not just ones still pending), so it can detect
+  and correct an already-"uploaded" session too — including deleting the
+  old, wrong Drive file (`priorUpload.fileId`) once the corrected one is
+  uploaded. If you're auditing older continuous-recording rows, check
+  whether their upload predates this fix.
+- **Two real bugs were caught only by running against production data**,
+  not synthetic tests, both now fixed in the shipped code:
+  1. The split only `mkdir -p`'d the *first* session's output folder before
+     writing — a second session in a different course folder (e.g.
+     `DSM-102/` when the first was `DSM-101/`) failed with "No such file or
+     directory". Fixed by creating every session's target directory before
+     splitting.
+  2. A retry after a mid-split failure would have re-downloaded the entire
+     2+ hour raw file from Zoom for no reason. Fixed by checking for an
+     already-downloaded raw file (deterministic filename per link/date)
+     before re-fetching.
+- **`pending-manual-split` state is self-contained** (`groupStateKeys`,
+  `targetPaths`, `fileNames`, `courseFolderNames` written directly into the
+  state entry) so `confirm-split.mjs` never needs to re-fetch or re-parse
+  the recordings sheet — everything needed to finish the split lives in the
+  state file already.
+- **Not yet exercised live**: the actual `pending-manual-split` /
+  `confirm-split.mjs` path itself, since the one real occurrence so far
+  found a confident silence gap automatically. Verified instead via a
+  synthetic audio file with a deliberate silence gap (confirms
+  `detectSilenceGaps`/`pickCutPoints`/`splitByCutPoints` work end to end)
+  and via `confirm-split.mjs`'s argument/state validation paths directly.
+  Treat the first real `pending-manual-split` occurrence as this path's
+  real-world test.
