@@ -20,6 +20,7 @@ import os from "node:os";
 import { google } from "googleapis";
 import { getGmailAuthClient } from "./lib/gmailAuth.mjs";
 import { mergeLocalConfig } from "./lib/configLocal.mjs";
+import { buildReportEmail } from "./lib/notify.mjs";
 
 function expandHome(p) {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
@@ -68,84 +69,15 @@ function extractSummary(logText) {
   return { downloaded: +downloaded, uploaded: +uploaded, fail: +fail, skip: +skip, pendingSplit: +pendingSplit };
 }
 
-// A continuous (never stopped/restarted) recording where no confident
-// silence gap was found needs a one-time human timestamp -- see
-// docs/continuous-recording-splitting.md and confirm-split.mjs. Surfacing
-// the exact stateKey(s) here (parsed straight from download-recordings.mjs's
-// own SKIP line) means the email itself is the actionable next step,
-// without having to go dig through the state file first.
-function extractPendingSplitStateKeys(logText) {
-  return [...logText.matchAll(/^SKIP\s+\(pending manual split -- run confirm-split\.mjs (\S+)\)/gm)].map((m) => m[1]);
-}
-
-// The most likely useful lines when there's no SUMMARY line at all (a fatal,
-// uncaught error killed the run before reaching one) -- last handful of
-// lines, which is where main().catch's console.error(err) stack trace lands.
-function tail(logText, n) {
-  const lines = logText.trimEnd().split("\n");
-  return lines.slice(-n).join("\n");
-}
-
-// Appended to bodyLines (and folded into the subject) whenever the SUMMARY
-// line reports pendingSplit > 0, regardless of whether the run otherwise
-// succeeded or failed -- a continuous recording needing a manual split
-// isn't itself a sync failure (everything else still ran fine), but it's
-// also not "nothing to do" and must not be silently missed in either the
-// success or failure branch below.
-function pendingSplitNote(summary, logText) {
-  if (!summary || summary.pendingSplit === 0) return { subjectSuffix: "", lines: [] };
-  const stateKeys = extractPendingSplitStateKeys(logText);
-  const lines = [
-    "",
-    `${summary.pendingSplit} recording(s) need a manual split (no confident silence gap found) -- run:`,
-    ...stateKeys.map((k) => `  node confirm-split.mjs "${k}" --at MM:SS`),
-  ];
-  return { subjectSuffix: `, ${summary.pendingSplit} needs manual split`, lines };
-}
-
-function buildReport({ syncExit, logText, isRetry, classification }) {
-  const summary = extractSummary(logText);
-  const retryTag = isRetry ? " (retry)" : "";
-  const { subjectSuffix, lines: pendingLines } = pendingSplitNote(summary, logText);
-
-  if (syncExit === 0) {
-    if (!summary || (summary.downloaded === 0 && summary.uploaded === 0 && summary.pendingSplit === 0)) {
-      return { subject: `Zoom sync: nothing new today${retryTag}`, bodyLines: [summary ? "Nothing to download or upload." : "Run completed with no SUMMARY line (unexpected, but exit code was 0)."] };
-    }
-    const parts = [];
-    if (summary.downloaded > 0) parts.push(`${summary.downloaded} downloaded`);
-    if (summary.uploaded > 0) parts.push(`${summary.uploaded} uploaded`);
-    if (parts.length === 0 && summary.pendingSplit > 0) parts.push("nothing new");
-    return {
-      subject: `Zoom sync: ${parts.join(", ")}${subjectSuffix}${retryTag}`,
-      bodyLines: [`downloaded=${summary.downloaded} uploaded=${summary.uploaded} fail=${summary.fail} skip=${summary.skip} pendingSplit=${summary.pendingSplit}`, ...pendingLines],
-    };
-  }
-
-  const failLines = [...logText.matchAll(/^FAIL.*$/gm)].map((m) => m[0]);
-  const bodyLines = [];
-  if (classification.reason) bodyLines.push(`Diagnosis: ${classification.reason}`);
-  if (summary) bodyLines.push(`downloaded=${summary.downloaded} uploaded=${summary.uploaded} fail=${summary.fail} skip=${summary.skip} pendingSplit=${summary.pendingSplit}`);
-  if (failLines.length > 0) {
-    bodyLines.push("", "Failures:", ...failLines.slice(0, 10));
-  } else if (!summary) {
-    bodyLines.push("", "No SUMMARY/FAIL lines found -- run likely crashed before completing. Last lines of the log:", "", tail(logText, 25));
-  }
-  bodyLines.push(...pendingLines);
-  bodyLines.push("", classification.retry ? "A same-day retry has been queued." : "No same-day retry queued -- this needs a manual fix.");
-
-  return { subject: `Zoom sync FAILED (exit ${syncExit})${subjectSuffix}${retryTag}`, bodyLines };
-}
-
-function buildRawMessage({ to, from, subject, text }) {
+function buildRawMessage({ to, from, subject, html }) {
   const messageParts = [
     `From: ${from}`,
     `To: ${to}`,
     `Subject: =?utf-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`,
     "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=utf-8",
+    "Content-Type: text/html; charset=utf-8",
     "",
-    text,
+    html,
   ];
   return Buffer.from(messageParts.join("\r\n")).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
@@ -158,7 +90,8 @@ async function main() {
 
   const config = loadConfig();
   const classification = classify(logText, syncExit);
-  const { subject, bodyLines } = buildReport({ syncExit, logText, isRetry, classification });
+  const summary = extractSummary(logText);
+  const { subject, html } = buildReportEmail({ term: config.term, syncExit, isRetry, summary, classification, logText });
 
   try {
     const authClient = await getGmailAuthClient(config.googleOAuth.clientSecretFile, expandHome(config.notifications.tokenFile));
@@ -167,7 +100,7 @@ async function main() {
       to: config.notifications.toEmail,
       from: config.notifications.toEmail,
       subject,
-      text: bodyLines.join("\n"),
+      html,
     });
     await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
     console.error(`Report emailed: ${subject}`);
