@@ -286,13 +286,18 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-record
 ```
 
 **Reporting:** `send-report.mjs` reads `last-sync-output.log`, looks for the
-`SUMMARY: downloaded=N uploaded=N fail=N skip=N` line `download-recordings.mjs`
-prints at the end of a normal run (or, on a fatal crash with no such line, the
-last ~25 lines of the log plus any `FAIL` lines), and emails one plain-text
-report per run via the Gmail API to the address in `config.json`'s
-`notifications.toEmail` — subject line front-loads the outcome (e.g. `Zoom
-sync: 2 uploaded` or `Zoom sync FAILED (exit 1)`), so it's readable from a
-lock-screen notification banner alone. This uses its own Gmail-send-only
+`SUMMARY: downloaded=N uploaded=N fail=N skip=N pendingSplit=N` line
+`download-recordings.mjs` prints at the end of a normal run (or, on a fatal
+crash with no such line, the last ~25 lines of the log plus any `FAIL`
+lines), and emails one HTML report per run via the Gmail API to the address
+in `config.json`'s `notifications.toEmail` — subject line front-loads the
+outcome (e.g. `Zoom sync: 2 uploaded` or `Zoom sync FAILED (exit 1)`), so
+it's readable from a lock-screen notification banner alone. The HTML itself
+(`lib/notify.mjs`, matching the sibling `calendar-sync` project's own
+`lib/notify.mjs` card-based style) is built entirely by parsing
+download-recordings.mjs's own plain-text log for `Uploading -> .../OK`,
+`FAIL`, and pending-manual-split `SKIP` lines — no separate structured
+output from the sync itself was needed. This uses its own Gmail-send-only
 OAuth token (`lib/gmailAuth.mjs`, `~/.zoom-recordings-sync/gmail-token.json`)
 kept deliberately separate from the Sheets/Drive token above — see that
 file's header comment for why (short version: adding a scope to an
