@@ -336,6 +336,34 @@ normal scheduled run (safe because the state file makes re-runs idempotent
 per recording). A flag left over from a previous day (e.g. the Mac stayed
 asleep for days) is discarded without running anything.
 
+**Optional: waking the Mac for a closed lid.** By default, if the lid is
+closed at 9am, `launchd` doesn't queue the missed run — it just fires once,
+whenever the Mac next actually wakes (see `docs/background-automation.md`
+for why: closing the lid is full system sleep, not a pause). That's already
+safe here (same-day retry + idempotent re-runs mean nothing is lost, just
+possibly delayed), but if you want the sync to actually run closer to 9am
+regardless of lid state, `schedule-wakeup.sh` + `install-wake-scheduler.sh`
+queue a macOS scheduled-wake event (`pmset schedule wake`) for
+`config.json`'s `dailyRunTime` every night at 00:05, mirroring
+`scripts/calendar-sync`'s own wake scheduler:
+
+```bash
+sudo ./install-wake-scheduler.sh
+```
+
+This is a genuinely optional add-on, not installed by default — read
+`schedule-wakeup.sh`'s header before installing it. The short version: it
+needs a root LaunchDaemon (`pmset schedule` requires root, hence a
+`LaunchDaemon` in `/Library/LaunchDaemons/`, not another per-user
+`LaunchAgent`), it queues one-time events re-armed nightly (`pmset` has no
+"repeat daily at this time" primitive), and — the real limit worth knowing
+before relying on it — Apple's scheduled wake is only reliably honored while
+plugged into AC power; on battery alone it's inconsistent across Mac
+models, with no way to verify that from software. If it doesn't wake this
+particular Mac reliably, that's a platform limit, not a bug to chase —
+uninstall it and rely on the existing catch-up-on-next-wake behavior
+instead (see its header comment for the exact `launchctl bootout` command).
+
 **Known gotcha (already solved, documented for future edits):** macOS TCC
 blocks background (non-GUI, launchd-spawned) processes from *executing* a
 script that lives inside `~/Documents` — you'll see `Operation not

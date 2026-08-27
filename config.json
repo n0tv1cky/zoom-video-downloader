@@ -1,6 +1,8 @@
 {
   "term": "MSDSM Batch 6 - Term 1",
 
+  "dailyRunTime": "09:00",
+
   "recordingsSheet": {
     "id": "<YOUR_RECORDINGS_SHEET_ID>",
     "gid": "0"
