@@ -58,7 +58,7 @@ echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start${retry_tag} ====="
 # lid open at 9am, only awake (which caffeinate -i above still can't
 # guarantee against a manual lid-close, only idle sleep).
 set +e
-caffeinate -i node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/download-recordings.mjs > "$SYNC_LOG" 2>&1
+caffeinate -i node /Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings/download-recordings.mjs > "$SYNC_LOG" 2>&1
 sync_exit=$?
 set -e
 
@@ -69,7 +69,7 @@ echo "----- sync finished (exit $sync_exit); generating report -----"
 # Its own diagnostic/warning output goes to stderr so it shows up in this
 # log without contaminating that one line.
 set +e
-retry_verdict=$(node /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings/send-report.mjs "$sync_exit" "$SYNC_LOG" $($is_retry && echo --retry))
+retry_verdict=$(node /Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings/send-report.mjs "$sync_exit" "$SYNC_LOG" $($is_retry && echo --retry))
 report_exit=$?
 set -e
 echo "Report verdict: ${retry_verdict:-<none, report script failed with exit $report_exit>}"

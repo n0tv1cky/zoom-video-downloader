@@ -7,7 +7,7 @@
 # wake scheduler; see docs/background-automation.md for the general pattern.
 #
 # Requires sudo -- run this yourself, not via an unattended agent:
-#   ! cd /Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings && sudo ./install-wake-scheduler.sh
+#   ! cd /Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings && sudo ./install-wake-scheduler.sh
 #
 # This is a genuinely optional add-on to the daily sync (which already has
 # its own catch-up-on-wake safety net via the retry-checker LaunchAgent).
@@ -24,7 +24,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-REPO_DIR="/Users/n0tv1cky/Documents/Personal/masters/scripts/zoom-recordings"
+REPO_DIR="/Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings"
 DEPLOY_DIR="/Users/n0tv1cky/.zoom-recordings-sync"
 PLIST_LABEL="com.n0tv1cky.zoom-recordings-wake-scheduler"
 PLIST_PATH="/Library/LaunchDaemons/${PLIST_LABEL}.plist"
