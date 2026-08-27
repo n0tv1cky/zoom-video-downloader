@@ -27,8 +27,8 @@ flat folder instead.
 
 The recordings sheet uses each subject's short-form abbreviation (e.g. `ME
 (2)`), but the program's real course codes are the `DSM <N>` numbers from
-the [schedule sheet](https://docs.google.com/spreadsheets/d/<YOUR_SCHEDULE_SHEET_ID>)'s
-course legend table (further down that sheet, past the daily timetable) —
+the schedule sheet's (see `scripts/attendance`'s `config.local.json` for the
+id) course legend table (further down that sheet, past the daily timetable) —
 some subjects already appear in that canonical form directly (`DSM 101`,
 `DSM 102`, `DSM 103`), others only by abbreviation (`ME` = `DSM 107`, `MC` =
 `DSM 104`, etc.). `config.json`'s `subjectCodeMap` maps abbreviation ->
@@ -408,7 +408,7 @@ Everything term-specific lives in `config.json` — no code changes needed:
   },
   "driveUpload": {
     "enabled": true,
-    "rootFolderId": "<YOUR_DRIVE_ROOT_FOLDER_ID>",  // same Drive folder every term is fine
+    "rootFolderId": "<your-drive-folder-id>",  // same Drive folder every term is fine
     "organizeByCourse": true,
     "deleteLocalAfterUpload": true  // free local disk space once Drive has a confirmed copy
     // termFolderName defaults to outputDir's folder name (e.g.

@@ -25,6 +25,7 @@ import readline from "node:readline/promises";
 import { execSync, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
+import { mergeLocalConfig } from "./lib/configLocal.mjs";
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes("--dry-run");
@@ -65,7 +66,7 @@ function defaultChromeUserDataDir() {
 
 function loadConfig() {
   const configDir = path.dirname(CONFIG_PATH);
-  const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+  const raw = mergeLocalConfig(configDir, JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
   raw.outputDir = resolveConfigPath(configDir, raw.outputDir);
   raw.stateFile = expandHome(raw.stateFile);
   raw.organizeByCourse = raw.organizeByCourse ?? true;

@@ -19,6 +19,7 @@ import path from "node:path";
 import os from "node:os";
 import { google } from "googleapis";
 import { getGmailAuthClient } from "./lib/gmailAuth.mjs";
+import { mergeLocalConfig } from "./lib/configLocal.mjs";
 
 function expandHome(p) {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
@@ -31,7 +32,7 @@ function expandHome(p) {
 // "./oauth-client.json" because its CWD wasn't this directory.
 function loadConfig() {
   const configDir = import.meta.dirname;
-  const raw = JSON.parse(fs.readFileSync(path.join(configDir, "config.json"), "utf8"));
+  const raw = mergeLocalConfig(configDir, JSON.parse(fs.readFileSync(path.join(configDir, "config.json"), "utf8")));
   const clientSecretFile = raw.googleOAuth.clientSecretFile;
   raw.googleOAuth.clientSecretFile = path.isAbsolute(clientSecretFile) ? clientSecretFile : path.resolve(configDir, clientSecretFile);
   return raw;
