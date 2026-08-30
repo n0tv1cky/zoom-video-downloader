@@ -74,22 +74,30 @@ report_exit=$?
 set -e
 echo "Report verdict: ${retry_verdict:-<none, report script failed with exit $report_exit>}"
 
-# SAME-DAY RETRY: if today's scheduled (non-retry) run fails and send-report
-# didn't classify it as NO-RETRY-worthy (fail-open default: retry unless
-# it's a known non-transient failure), write today's date to $RETRY_FLAG.
+# SAME-DAY RETRY: gated on send-report.mjs's own RETRY/NO-RETRY verdict
+# alone, NOT on $sync_exit -- download-recordings.mjs only exits non-zero on
+# a fatal crash, but a per-recording failure (one bad Zoom link) is
+# non-fatal by design and leaves $sync_exit at 0 even though the SUMMARY
+# line's fail count is > 0 (confirmed live 2026-08-30: a Navigation timeout
+# on one link, 2 other recordings uploaded fine in the same exit-0 run).
+# Gating on $sync_exit alone silently skipped same-day retry for exactly
+# that case. send-report.mjs already accounts for both $sync_exit and the
+# SUMMARY fail count when it prints RETRY/NO-RETRY, so trust that verdict
+# directly here.
+#
 # retry-if-needed.sh (its own launchd job, see
-# com.n0tv1cky.zoom-recordings-retry.plist) checks that flag on a timer that
-# also catches up right after the Mac wakes from sleep, and if it's set for
-# today, calls this script again with --retry. A --retry run does NOT re-arm
-# the flag on failure, so this is at most one extra attempt per day -- a
-# second same-day failure is left for tomorrow's normal scheduled run (state
-# file already makes that safe/idempotent; see README).
-if [ "$sync_exit" -ne 0 ] && ! $is_retry; then
+# com.n0tv1cky.zoom-recordings-retry.plist) checks $RETRY_FLAG on a timer
+# that also catches up right after the Mac wakes from sleep, and if it's set
+# for today, calls this script again with --retry. A --retry run does NOT
+# re-arm the flag on failure, so this is at most one extra attempt per day
+# -- a second same-day failure is left for tomorrow's normal scheduled run
+# (state file already makes that safe/idempotent; see README).
+if ! $is_retry; then
   if [ "$retry_verdict" = "RETRY" ]; then
     date +%F > "$RETRY_FLAG"
     echo "Same-day retry queued (fires next wake/check via retry-if-needed.sh)."
   else
-    echo "No same-day retry queued -- tomorrow's scheduled run will try again."
+    echo "No same-day retry needed."
   fi
 fi
 

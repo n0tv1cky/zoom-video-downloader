@@ -54,8 +54,16 @@ const NON_TRANSIENT_PATTERNS = [
   { re: /Cannot find module/i, reason: "a required module is missing -- code/dependency problem, not transient" },
 ];
 
-function classify(logText, syncExit) {
-  if (syncExit === 0) return { retry: false, reason: null };
+// hasFailure, not syncExit -- download-recordings.mjs only exits non-zero
+// on a *fatal* crash (main().catch). A per-recording failure (recordFailure)
+// is non-fatal by design (one bad Zoom link shouldn't abort the whole run),
+// so a run can legitimately finish with exit 0 while still having failed
+// sessions (confirmed live 2026-08-30: a Navigation timeout on one
+// combined-link group, exit 0 overall, 2 other recordings uploaded fine in
+// the same run). Gating retry on syncExit alone silently skipped same-day
+// retry for exactly the kind of transient failure it exists to catch.
+function classify(logText, hasFailure) {
+  if (!hasFailure) return { retry: false, reason: null };
   for (const { re, reason } of NON_TRANSIENT_PATTERNS) {
     if (re.test(logText)) return { retry: false, reason };
   }
@@ -89,9 +97,10 @@ async function main() {
   const logText = fs.readFileSync(logPathArg, "utf8");
 
   const config = loadConfig();
-  const classification = classify(logText, syncExit);
   const summary = extractSummary(logText);
-  const { subject, html } = buildReportEmail({ term: config.term, syncExit, isRetry, summary, classification, logText });
+  const hasFailure = syncExit !== 0 || (summary?.fail ?? 0) > 0;
+  const classification = classify(logText, hasFailure);
+  const { subject, html } = buildReportEmail({ term: config.term, syncExit, hasFailure, isRetry, summary, classification, logText });
 
   try {
     const authClient = await getGmailAuthClient(config.googleOAuth.clientSecretFile, expandHome(config.notifications.tokenFile));
@@ -111,7 +120,7 @@ async function main() {
     console.error(`WARN: failed to send report email: ${err.message}`);
   }
 
-  console.log(syncExit !== 0 && classification.retry ? "RETRY" : "NO-RETRY");
+  console.log(hasFailure && classification.retry ? "RETRY" : "NO-RETRY");
 }
 
 main().catch((err) => {
