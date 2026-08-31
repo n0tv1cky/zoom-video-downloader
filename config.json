@@ -52,8 +52,9 @@
 
   "notifications": {
     "toEmail": "<YOUR_INSTITUTE_EMAIL>",
+    "additionalRecipients": [],
     "tokenFile": "~/.zoom-recordings-sync/gmail-token.json",
-    "note": "Separate Gmail-send-only OAuth token from googleOAuth above -- see lib/gmailAuth.mjs for why. from == to (own account)."
+    "note": "Separate Gmail-send-only OAuth token from googleOAuth above -- see lib/gmailAuth.mjs for why. from == toEmail (own account, Gmail send-only token can only send as itself); additionalRecipients are extra To: addresses that get the report but aren't the sending account."
   },
 
   "driveUpload": {

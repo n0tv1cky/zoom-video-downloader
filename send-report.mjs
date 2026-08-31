@@ -105,9 +105,10 @@ async function main() {
   try {
     const authClient = await getGmailAuthClient(config.googleOAuth.clientSecretFile, expandHome(config.notifications.tokenFile));
     const gmail = google.gmail({ version: "v1", auth: authClient });
+    const to = [config.notifications.toEmail, ...(config.notifications.additionalRecipients ?? [])].join(", ");
     const raw = buildRawMessage({
-      to: config.notifications.toEmail,
-      from: config.notifications.toEmail,
+      to,
+      from: config.notifications.toEmail, // Gmail send-only token can only send as its own account
       subject,
       html,
     });
