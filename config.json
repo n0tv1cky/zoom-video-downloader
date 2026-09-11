@@ -3,7 +3,7 @@
 
   "schedule": {
     "intervalHours": 4,
-    "activeHours": { "start": "08:00", "end": "22:00" },
+    "activeHours": { "start": "09:00", "end": "21:00" },
     "note": "install-launchd.sh derives launchd's StartCalendarInterval array from this (one entry per intervalHours step within activeHours) -- re-run it after changing either value. daily-check.sh also re-checks activeHours itself at runtime as a safety net (stale plist, manual/RunAtLoad firing), same belt-and-suspenders pattern as the sibling calendar-sync project's sync-schedule.mjs."
   },
 
