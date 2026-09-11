@@ -75,5 +75,17 @@
     "PS": "DSM 101",
     "PFDS": "DSM 102",
     "DS": "DSM 103"
+  },
+
+  "courseFaculty": {
+    "note": "Transcribed from the schedule sheet's own instructor legend (last tab) -- used only to flag (never auto-correct) a Faculty-column value in the recordings sheet that doesn't match any listed instructor for that course. Re-transcribe if the legend changes (e.g. next term).",
+    "DSM 101": ["Prof. Suman Majumdar", "Prof. Arshad", "Prof. Ruchi Sharma", "Prof. Pritee Sharma"],
+    "DSM 102": ["Prof. Abhirup Datta", "Prof. Saurabh Das"],
+    "DSM 103": ["Dr. Somnath Dey", "Dr. Surya Prakash"],
+    "DSM 104": ["Prof. Varun Rijhwani"],
+    "DSM 106": ["Prof. Jagannathan Srinath"],
+    "DSM 107": ["Prof. Deepak Sethia", "Prof. Karthikeya Naraparaju"],
+    "DSM 108": ["Prof. Ray Sanjog"],
+    "DSM 109": ["Prof. Amit Kumar Vatsa"]
   }
 }

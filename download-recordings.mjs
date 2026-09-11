@@ -173,6 +173,35 @@ function splitField(value) {
     .filter(Boolean);
 }
 
+// Surname-only fuzzy match against config.json's courseFaculty legend (course
+// code -> known instructors, transcribed from the schedule sheet's own
+// instructor legend). This exists to catch data-entry mistakes in the
+// recordings sheet's Faculty column -- confirmed live 2026-09-06, two rows
+// had two course codes' faculty names crossed with each other. Deliberately
+// NEVER auto-corrects the faculty/filename: a name absent from the legend can
+// just as easily be a real substitute lecturer (also confirmed live --
+// DSM 101's "Prof. Arshad" is one of that course's own listed instructors,
+// just not the usual one), so silently "fixing" it risks quietly relabeling a
+// real substitute's recording as the regular professor's -- a worse, harder
+// -to-notice error than the one this is meant to catch. Flagging it in the
+// report email keeps a human in the loop instead.
+function facultySurname(name) {
+  const normalized = String(name ?? "")
+    .toLowerCase()
+    .replace(/^(prof\.?|dr\.?)\s*/g, "")
+    .replace(/[.,]/g, "")
+    .trim();
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+function matchesKnownFaculty(faculty, knownFaculty) {
+  if (!knownFaculty || knownFaculty.length === 0) return true; // no legend entry for this course -- nothing to check against
+  const surname = facultySurname(faculty);
+  if (!surname) return true;
+  return knownFaculty.some((known) => facultySurname(known) === surname);
+}
+
 function slug(text) {
   return String(text ?? "")
     .replace(/^(prof\.?|dr\.?|mr\.?|ms\.?|mrs\.?)\s+/i, "")
@@ -660,6 +689,20 @@ async function main() {
     return { session, fileName, courseFolderName, targetDir, targetPath, localFileExists, uploaded, pendingManualSplit, needsDownload, needsUpload };
   });
   const planByStateKey = new Map(plan.map((p) => [p.session.stateKey, p]));
+
+  // Flag-only, never auto-corrects -- see matchesKnownFaculty's comment above
+  // for why. Runs over every session in the sheet, not just pending ones, so
+  // a mismatch is caught the same day it's entered even if that session was
+  // already downloaded/uploaded on a prior run.
+  for (const p of plan) {
+    const known = config.courseFaculty?.[p.session.subjectCode];
+    if (!matchesKnownFaculty(p.session.faculty, known)) {
+      console.log(
+        `WARN  (unexpected faculty) ${p.fileName}: "${p.session.faculty}" is not a listed instructor for ${p.session.subjectCode}` +
+          (known?.length ? ` (expected one of: ${known.join(", ")})` : "")
+      );
+    }
+  }
 
   // Tallied into a final `SUMMARY:` line so an unattended caller (see
   // send-report.mjs) can classify the run's outcome by parsing one line
