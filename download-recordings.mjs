@@ -693,16 +693,27 @@ async function main() {
   // Flag-only, never auto-corrects -- see matchesKnownFaculty's comment above
   // for why. Runs over every session in the sheet, not just pending ones, so
   // a mismatch is caught the same day it's entered even if that session was
-  // already downloaded/uploaded on a prior run.
+  // already downloaded/uploaded on a prior run. There's no control over the
+  // recordings sheet itself (someone else maintains it), so a mistake there
+  // can't be expected to ever get corrected -- state.facultyWarned makes this
+  // a one-time flag per session (keyed the same as download/upload status)
+  // instead of nagging on every single future run forever.
+  let facultyWarningsStateChanged = false;
   for (const p of plan) {
+    if (state[p.session.stateKey]?.facultyWarned) continue;
     const known = config.courseFaculty?.[p.session.subjectCode];
     if (!matchesKnownFaculty(p.session.faculty, known)) {
       console.log(
         `WARN  (unexpected faculty) ${p.fileName}: "${p.session.faculty}" is not a listed instructor for ${p.session.subjectCode}` +
           (known?.length ? ` (expected one of: ${known.join(", ")})` : "")
       );
+      if (!DRY_RUN) {
+        state[p.session.stateKey] = { ...state[p.session.stateKey], facultyWarned: true };
+        facultyWarningsStateChanged = true;
+      }
     }
   }
+  if (facultyWarningsStateChanged) saveState(config.stateFile, state);
 
   // Tallied into a final `SUMMARY:` line so an unattended caller (see
   // send-report.mjs) can classify the run's outcome by parsing one line
