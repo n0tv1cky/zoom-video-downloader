@@ -243,21 +243,25 @@ reads its log afterward.
 
 **Setup:**
 
-1. Deploy the wrapper scripts outside `~/Documents` — required (see gotcha
-   below), and re-run this any time you edit `scripts/zoom-recordings/daily-check.sh`
-   or `scripts/zoom-recordings/retry-if-needed.sh`:
+1. Install the daily-sync LaunchAgent — `install-launchd.sh` deploys
+   `daily-check.sh` outside `~/Documents` (required, see gotcha below) and
+   generates `~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist`'s
+   `StartCalendarInterval` array from `config.json`'s `schedule` block
+   (`intervalHours` + `activeHours` — defaults to every 4h between 08:00 and
+   22:00, so it fires at 08:00/12:00/16:00/20:00 and never wakes the Mac
+   outside that window):
    ```bash
-   cp scripts/zoom-recordings/daily-check.sh ~/.zoom-recordings-sync/daily-check.sh
-   cp scripts/zoom-recordings/retry-if-needed.sh ~/.zoom-recordings-sync/retry-if-needed.sh
-   chmod +x ~/.zoom-recordings-sync/daily-check.sh ~/.zoom-recordings-sync/retry-if-needed.sh
+   ./install-launchd.sh
    ```
-2. Install both LaunchAgents — the daily job
-   (`~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist`, edit the
-   `Hour`/`Minute` in its `StartCalendarInterval` if you want a different time
-   than 9:00 AM) and the retry-checker
-   (`~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-retry.plist`):
+   Re-run this any time you edit `daily-check.sh`, or change `config.json`'s
+   `schedule` block — the plist has to be regenerated, editing `config.json`
+   alone doesn't take effect until you do.
+2. Deploy `retry-if-needed.sh` and install its LaunchAgent (unrelated to the
+   `schedule` block above — it polls a fixed 15-min `StartInterval`
+   regardless of active hours):
    ```bash
-   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
+   cp retry-if-needed.sh ~/.zoom-recordings-sync/retry-if-needed.sh
+   chmod +x ~/.zoom-recordings-sync/retry-if-needed.sh
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-retry.plist
    ```
 
@@ -267,7 +271,7 @@ reads its log afterward.
 # Check what happened on recent runs (this is where the AI's own summary lands)
 tail -f ~/.zoom-recordings-sync/daily-check.log
 
-# Trigger a run right now, without waiting for 9am (useful for testing)
+# Trigger a run right now, without waiting for the next active-hours slot (useful for testing)
 launchctl kickstart gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
 
 # Check whether it's currently registered/running and see its config
@@ -280,9 +284,8 @@ launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
 launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync
 rm ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
 
-# Reinstall after editing the plist itself (e.g. changing the scheduled time)
-launchctl bootout gui/$(id -u)/com.n0tv1cky.zoom-recordings-sync   # ok if this errors "could not find" -- means it wasn't loaded
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.zoom-recordings-sync.plist
+# Reinstall after changing config.json's `schedule` block (intervalHours/activeHours)
+./install-launchd.sh
 ```
 
 **Reporting:** `send-report.mjs` reads `last-sync-output.log`, looks for the
@@ -306,7 +309,7 @@ narrower grant; a brand-new token file for a brand-new scope sidesteps that
 entirely). See `docs/email-notifications.md` for the general Gmail-API-send
 pattern this reuses.
 
-**Same-day retry:** the scheduled 9am run wraps the sync in `caffeinate -i`
+**Same-day retry:** each scheduled run wraps the sync in `caffeinate -i`
 (blocks idle sleep only for that call, released automatically when it exits)
 after a 2026-08-20 run got killed mid-request by idle sleep and silently
 missed 2 real recordings — but that only covers idle sleep, not a manual
@@ -342,14 +345,15 @@ per recording). A flag left over from a previous day (e.g. the Mac stayed
 asleep for days) is discarded without running anything.
 
 **Optional: waking the Mac for a closed lid.** By default, if the lid is
-closed at 9am, `launchd` doesn't queue the missed run — it just fires once,
-whenever the Mac next actually wakes (see `docs/background-automation.md`
-for why: closing the lid is full system sleep, not a pause). That's already
-safe here (same-day retry + idempotent re-runs mean nothing is lost, just
-possibly delayed), but if you want the sync to actually run closer to 9am
-regardless of lid state, `schedule-wakeup.sh` + `install-wake-scheduler.sh`
-queue a macOS scheduled-wake event (`pmset schedule wake`) for
-`config.json`'s `dailyRunTime` every night at 00:05, mirroring
+closed at a scheduled slot's time, `launchd` doesn't queue the missed run —
+it just fires once, whenever the Mac next actually wakes (see
+`docs/background-automation.md` for why: closing the lid is full system
+sleep, not a pause). That's already safe here (same-day retry + idempotent
+re-runs mean nothing is lost, just possibly delayed), but if you want the
+sync to actually run closer to each scheduled slot regardless of lid state,
+`schedule-wakeup.sh` + `install-wake-scheduler.sh` queue a macOS
+scheduled-wake event (`pmset schedule wake`) for every remaining
+`config.json` `schedule.activeHours` slot, every night at 00:05, mirroring
 `scripts/calendar-sync`'s own wake scheduler:
 
 ```bash

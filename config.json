@@ -1,7 +1,11 @@
 {
   "term": "MSDSM Batch 6 - Term 1",
 
-  "dailyRunTime": "09:00",
+  "schedule": {
+    "intervalHours": 4,
+    "activeHours": { "start": "08:00", "end": "22:00" },
+    "note": "install-launchd.sh derives launchd's StartCalendarInterval array from this (one entry per intervalHours step within activeHours) -- re-run it after changing either value. daily-check.sh also re-checks activeHours itself at runtime as a safety net (stale plist, manual/RunAtLoad firing), same belt-and-suspenders pattern as the sibling calendar-sync project's sync-schedule.mjs."
+  },
 
   "timeSlots": {
     "note": "Used only to narrow the search window for continuous-recording splitting (see docs/continuous-recording-splitting.md) -- never as the cut point itself. Duplicated from the sibling attendance/calendar-sync projects' own timeSlots, deliberately not shared -- keep in sync by hand if the schedule ever changes.",

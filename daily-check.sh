@@ -45,6 +45,29 @@ retry_tag=""
 if $is_retry; then retry_tag=" (retry)"; fi
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start${retry_tag} ====="
 
+# Safety net, not the primary mechanism: install-launchd.sh generates a
+# StartCalendarInterval array that only fires launchd within
+# config.json's schedule.activeHours in the first place (see that script's
+# header), so the Mac genuinely shouldn't even wake up outside the window.
+# This re-checks the same window at runtime anyway -- same belt-and-
+# suspenders pattern as the sibling calendar-sync project's own
+# isWithinActiveHours() -- to stay correct against a stale/unregenerated
+# plist, a manual `launchctl kickstart`, or RunAtLoad firing right after
+# a scheduled run. Reads config.json straight from this repo path (not a
+# deployed copy) -- already proven safe here, since daily-check.sh already
+# invokes download-recordings.mjs/send-report.mjs the same way.
+IN_ACTIVE_HOURS=$(node -e "
+const config = require('/Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings/config.json');
+const { start, end } = config.schedule.activeHours;
+const now = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
+console.log(now >= start && now <= end ? 'yes' : 'no');
+")
+if [ "$IN_ACTIVE_HOURS" != "yes" ]; then
+  echo "Outside config.json's schedule.activeHours -- skipping this run."
+  echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run end${retry_tag} (skipped, outside active hours) ====="
+  exit 0
+fi
+
 # caffeinate -i wraps the actual sync: on 2026-08-20 the laptop was awake
 # when launchd fired at 9am but went to idle sleep partway through, killing
 # an in-flight request. -i (not -s) only blocks *idle* sleep for the wrapped

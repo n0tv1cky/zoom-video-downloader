@@ -1,10 +1,14 @@
 #!/bin/bash
 # Installs a root LaunchDaemon that runs schedule-wakeup.sh once nightly
-# (00:05) to queue that day's `pmset schedule wake` event for
-# config.json's dailyRunTime -- see schedule-wakeup.sh's header for the
-# full reasoning and caveats (root requirement, one-time-not-recurring
-# pmset events, unreliable on battery). Mirrors scripts/calendar-sync's own
-# wake scheduler; see docs/background-automation.md for the general pattern.
+# (00:05) to queue that day's `pmset schedule wake` events, one per
+# config.json's schedule.activeHours slot -- see schedule-wakeup.sh's header
+# for the full reasoning and caveats (root requirement, one-time-not-
+# recurring pmset events, unreliable on battery). Mirrors scripts/calendar-sync's
+# own wake scheduler; see docs/background-automation.md for the general pattern.
+#
+# Re-run this (as root) after changing config.json's `schedule` block -- it
+# deploys a fresh copy of config.json alongside schedule-wakeup.sh, and the
+# LaunchDaemon reads that deployed copy, not the repo's.
 #
 # Requires sudo -- run this yourself, not via an unattended agent:
 #   ! cd /Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings && sudo ./install-wake-scheduler.sh
