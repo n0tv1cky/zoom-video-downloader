@@ -25,8 +25,28 @@ import readline from "node:readline/promises";
 import { execSync, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
+import { format } from "node:util";
 import { mergeLocalConfig } from "./lib/configLocal.mjs";
 import { probeDurationSeconds, detectSilenceGaps, pickCutPoints, splitByCutPoints } from "./lib/continuousSplit.mjs";
+
+// Mirrors every console.log/console.error call into logLines (in addition to
+// actually printing, unchanged) so a manual run can email itself a report
+// exactly like daily-check.sh's redirect-to-$SYNC_LOG does -- see
+// maybeAutoReport below. Confirmed live 2026-09-12: running this file
+// directly (as opposed to through daily-check.sh) three separate times left
+// three real outcomes -- two failures and a fix -- with no report email at
+// all, because send-report.mjs was never invoked for any of them.
+const logLines = [];
+const rawConsoleLog = console.log.bind(console);
+const rawConsoleError = console.error.bind(console);
+console.log = (...args) => {
+  logLines.push(format(...args));
+  rawConsoleLog(...args);
+};
+console.error = (...args) => {
+  logLines.push(format(...args));
+  rawConsoleError(...args);
+};
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes("--dry-run");
@@ -1026,7 +1046,24 @@ async function main() {
   console.log(`SUMMARY: downloaded=${counts.downloaded} uploaded=${counts.uploaded} fail=${counts.fail} skip=${counts.skip} pendingSplit=${counts.pendingSplit}`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only fires for a manual invocation -- daily-check.sh sets
+// ZOOM_SYNC_SKIP_AUTO_REPORT=1 before running this, because it already
+// captures this same output to $SYNC_LOG itself and calls send-report.mjs
+// with its own retry-tracking logic (see that file); auto-reporting here
+// too would double-email every scheduled run. A --dry-run also skips this --
+// it represents no real outcome, so emailing about it would be misleading.
+function maybeAutoReport(exitCode) {
+  if (DRY_RUN || process.env.ZOOM_SYNC_SKIP_AUTO_REPORT === "1") return;
+  const syncLogPath = expandHome("~/.zoom-recordings-sync/last-sync-output.log");
+  fs.mkdirSync(path.dirname(syncLogPath), { recursive: true });
+  fs.writeFileSync(syncLogPath, logLines.join("\n") + "\n");
+  spawnSync("node", [path.join(import.meta.dirname, "send-report.mjs"), String(exitCode), syncLogPath], { stdio: "inherit" });
+}
+
+main()
+  .then(() => maybeAutoReport(0))
+  .catch((err) => {
+    console.error(err);
+    maybeAutoReport(1);
+    process.exit(1);
+  });

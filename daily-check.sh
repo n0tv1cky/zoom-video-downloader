@@ -81,7 +81,12 @@ fi
 # lid open at 9am, only awake (which caffeinate -i above still can't
 # guarantee against a manual lid-close, only idle sleep).
 set +e
-caffeinate -i node /Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings/download-recordings.mjs > "$SYNC_LOG" 2>&1
+# ZOOM_SYNC_SKIP_AUTO_REPORT tells download-recordings.mjs not to email its
+# own report -- this script already captures the same output to $SYNC_LOG
+# and calls send-report.mjs itself below, with its own retry-tracking logic.
+# Without this, a scheduled run would get double-emailed (once by
+# download-recordings.mjs's own auto-report, once by this script).
+ZOOM_SYNC_SKIP_AUTO_REPORT=1 caffeinate -i node /Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings/download-recordings.mjs > "$SYNC_LOG" 2>&1
 sync_exit=$?
 set -e
 
