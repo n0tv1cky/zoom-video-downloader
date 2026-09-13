@@ -7,3 +7,7 @@ node_modules/
 # Secrets — never commit
 oauth-client.json
 config.local.json
+
+# Course material (DSM 107 prep: CORE text, lecture transcripts, reading PDFs)
+# Not code, and not ours to publish — this repo has a public GitHub remote.
+dsm107-prep/
