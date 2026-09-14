@@ -90,6 +90,31 @@ function buildRawMessage({ to, from, subject, html }) {
   return Buffer.from(messageParts.join("\r\n")).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// A "nothing new today" report at every single scheduled slot is real
+// inbox clutter (confirmed live 2026-09-14 -- a run every 4h with nothing
+// to do most of the time produced 5+ identical emails in one day, see the
+// screenshot that prompted this). Anything actually worth knowing about
+// (an upload, a failure, a pending-manual-split, an unexpected-faculty
+// flag) still emails every time, same as before -- this only suppresses
+// the empty case, and only for runs that aren't the last scheduled slot of
+// the day, so there's still always at least one email confirming the day's
+// final state even on a fully uneventful day.
+function isLastScheduledRunOfDay(config, now = new Date()) {
+  const { intervalHours, activeHours } = config.schedule ?? {};
+  if (!intervalHours || !activeHours) return true; // no schedule config to compare against -- default to always sending
+  const toMinutes = (hhmm) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const startMin = toMinutes(activeHours.start);
+  const endMin = toMinutes(activeHours.end);
+  const stepMin = intervalHours * 60;
+  let lastSlotMin = startMin;
+  for (let t = startMin; t <= endMin; t += stepMin) lastSlotMin = t;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  return nowMin >= lastSlotMin - 5; // small grace for cron jitter; also naturally covers a same-evening retry after the last slot
+}
+
 async function main() {
   const [syncExitArg, logPathArg, ...rest] = process.argv.slice(2);
   const syncExit = parseInt(syncExitArg, 10);
@@ -102,23 +127,28 @@ async function main() {
   const classification = classify(logText, hasFailure);
   const { subject, html } = buildReportEmail({ term: config.term, syncExit, hasFailure, isRetry, summary, classification, logText });
 
-  try {
-    const authClient = await getGmailAuthClient(config.googleOAuth.clientSecretFile, expandHome(config.notifications.tokenFile));
-    const gmail = google.gmail({ version: "v1", auth: authClient });
-    const to = [config.notifications.toEmail, ...(config.notifications.additionalRecipients ?? [])].join(", ");
-    const raw = buildRawMessage({
-      to,
-      from: config.notifications.toEmail, // Gmail send-only token can only send as its own account
-      subject,
-      html,
-    });
-    await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
-    console.error(`Report emailed: ${subject}`);
-  } catch (err) {
-    // A failed notification must not itself block the retry decision below --
-    // the sync's own outcome matters more than whether the email about it
-    // went out.
-    console.error(`WARN: failed to send report email: ${err.message}`);
+  const nothingToReport = /nothing new today/i.test(subject);
+  if (nothingToReport && !isLastScheduledRunOfDay(config)) {
+    console.error(`Report suppressed (${subject}, not the last scheduled run of the day -- config.schedule.activeHours.end)`);
+  } else {
+    try {
+      const authClient = await getGmailAuthClient(config.googleOAuth.clientSecretFile, expandHome(config.notifications.tokenFile));
+      const gmail = google.gmail({ version: "v1", auth: authClient });
+      const to = [config.notifications.toEmail, ...(config.notifications.additionalRecipients ?? [])].join(", ");
+      const raw = buildRawMessage({
+        to,
+        from: config.notifications.toEmail, // Gmail send-only token can only send as its own account
+        subject,
+        html,
+      });
+      await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+      console.error(`Report emailed: ${subject}`);
+    } catch (err) {
+      // A failed notification must not itself block the retry decision below --
+      // the sync's own outcome matters more than whether the email about it
+      // went out.
+      console.error(`WARN: failed to send report email: ${err.message}`);
+    }
   }
 
   console.log(hasFailure && classification.retry ? "RETRY" : "NO-RETRY");
