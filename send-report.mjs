@@ -115,6 +115,33 @@ function isLastScheduledRunOfDay(config, now = new Date()) {
   return nowMin >= lastSlotMin - 5; // small grace for cron jitter; also naturally covers a same-evening retry after the last slot
 }
 
+// The last-slot fallback above is misleading on its own: a day can have
+// real activity (uploads, failures, a crash) reported hours earlier and
+// then a genuinely empty last run -- sending "nothing new today" for that
+// last run reads as if the whole day was uneventful, when it wasn't
+// (confirmed live 2026-09-18: uploads + failures + a crash all got emailed
+// during the day, then the 21:00 run's own delta was empty and still sent
+// its own "nothing new today", contradicting everything already reported
+// hours before). REPORT_DATE_FILE tracks the last calendar date any report
+// -- of any kind -- actually got emailed; the last-slot fallback only fires
+// if nothing has been sent yet today, i.e. the day really was uneventful
+// end to end.
+const REPORT_DATE_FILE = expandHome("~/.zoom-recordings-sync/last-report-date");
+
+function todayDateString(now = new Date()) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function alreadyReportedToday() {
+  if (!fs.existsSync(REPORT_DATE_FILE)) return false;
+  return fs.readFileSync(REPORT_DATE_FILE, "utf8").trim() === todayDateString();
+}
+
+function markReportedToday() {
+  fs.mkdirSync(path.dirname(REPORT_DATE_FILE), { recursive: true });
+  fs.writeFileSync(REPORT_DATE_FILE, todayDateString());
+}
+
 async function main() {
   const [syncExitArg, logPathArg, ...rest] = process.argv.slice(2);
   const syncExit = parseInt(syncExitArg, 10);
@@ -128,8 +155,9 @@ async function main() {
   const { subject, html } = buildReportEmail({ term: config.term, syncExit, hasFailure, isRetry, summary, classification, logText });
 
   const nothingToReport = /nothing new today/i.test(subject);
-  if (nothingToReport && !isLastScheduledRunOfDay(config)) {
-    console.error(`Report suppressed (${subject}, not the last scheduled run of the day -- config.schedule.activeHours.end)`);
+  const shouldSuppress = nothingToReport && (!isLastScheduledRunOfDay(config) || alreadyReportedToday());
+  if (shouldSuppress) {
+    console.error(`Report suppressed (${subject} -- ${isLastScheduledRunOfDay(config) ? "already reported something today" : "not the last scheduled run of the day (config.schedule.activeHours.end)"})`);
   } else {
     try {
       const authClient = await getGmailAuthClient(config.googleOAuth.clientSecretFile, expandHome(config.notifications.tokenFile));
@@ -142,6 +170,7 @@ async function main() {
         html,
       });
       await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+      markReportedToday();
       console.error(`Report emailed: ${subject}`);
     } catch (err) {
       // A failed notification must not itself block the retry decision below --
