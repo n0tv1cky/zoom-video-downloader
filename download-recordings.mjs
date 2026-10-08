@@ -26,6 +26,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { format } from "node:util";
+import { createHash } from "node:crypto";
 import { mergeLocalConfig } from "./lib/configLocal.mjs";
 import { probeDurationSeconds, detectSilenceGaps, pickCutPoints, splitByCutPoints } from "./lib/continuousSplit.mjs";
 
@@ -315,14 +316,42 @@ function buildFileName(template, row) {
 // { subjectCode: "DSM 107", sessionNumber: "2", courseCodeWithSession: "DSM 107 (2)" }
 // via config.json's subjectCodeMap (abbreviation -> canonical code), falling
 // back to using the abbreviation unchanged if it's not in the map (so an
-// unrecognized code degrades gracefully instead of breaking the run).
+// unrecognized code degrades gracefully instead of breaking the run) --
+// `resolved: false` marks that case so main() can hold the upload rather
+// than filing it into a stray Drive folder.
+//
+// The sheet's format drifts (seen live): "DSM 101(18)" (no space), "dsm 103"
+// (lowercase -- previously produced a separate "dsm-103" folder), bare
+// "DSM 103" (no session number at all), and from 2026-10-06 "ME 11 (DS)" --
+// session number written bare and a trailing faculty-initials tag (Deepak
+// Sethia) in the parentheses where the session number used to be. That last
+// one fell through to the unchanged-abbreviation fallback and created
+// "ME-11-DS"/"ME-12-DS" Drive folders. A trailing parenthetical containing
+// letters is an annotation, never a course -- notably "(DS)" must NOT be
+// looked up in subjectCodeMap, where "DS" means DSM 103.
 function resolveSubjectCode(rawCourseCode, subjectCodeMap) {
-  const raw = String(rawCourseCode ?? "").trim();
-  const match = raw.match(/^(.*?)\s*\((\d+)\)\s*$/);
-  const abbrev = (match ? match[1] : raw).trim();
-  const sessionNumber = match ? match[2] : null;
-  const subjectCode = subjectCodeMap[abbrev.toUpperCase()] ?? (/^DSM\s*\d+$/i.test(abbrev) ? abbrev.replace(/\s+/g, " ") : abbrev);
-  return { subjectCode, sessionNumber, courseCodeWithSession: sessionNumber ? `${subjectCode} (${sessionNumber})` : subjectCode };
+  const raw = String(rawCourseCode ?? "").trim().replace(/\s+/g, " ");
+  const core = raw.replace(/\s*\([^()]*[A-Za-z][^()]*\)\s*$/, "").trim();
+  let subjectCode = core;
+  let sessionNumber = null;
+  // Canonical "DSM <N>" first, so a bare "DSM 103" isn't misread as
+  // abbreviation "DSM", session 103 by the abbreviation rule below.
+  const dsm = core.match(/^DSM\s*-?\s*(\d+)\s*(?:\(\s*(\d+)\s*\))?$/i);
+  const abbr = core.match(/^([A-Za-z]+)\s*-?\s*(?:\(\s*(\d+)\s*\)|(\d+))?$/);
+  if (dsm) {
+    subjectCode = `DSM ${dsm[1]}`;
+    sessionNumber = dsm[2] ?? null;
+  } else if (abbr) {
+    subjectCode = subjectCodeMap[abbr[1].toUpperCase()] ?? abbr[1];
+    sessionNumber = abbr[2] ?? abbr[3] ?? null;
+  }
+  return {
+    subjectCode,
+    sessionNumber,
+    courseCodeWithSession: sessionNumber ? `${subjectCode} (${sessionNumber})` : subjectCode,
+    resolved: /^DSM \d+$/.test(subjectCode),
+    rawCourseCode: raw,
+  };
 }
 
 // One folder per subject, not per session -- e.g. "DSM 107" -> "DSM-107" so
@@ -419,8 +448,38 @@ async function findOrCreateDriveFolder(drive, parentId, name) {
   return created.data.id;
 }
 
+async function md5OfFile(filePath) {
+  const hash = createHash("md5");
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
 async function uploadToDrive(drive, driveConfig, termFolderId, courseFolderName, localPath, fileName) {
   const parentId = driveConfig.organizeByCourse ? await findOrCreateDriveFolder(drive, termFolderId, courseFolderName) : termFolderId;
+
+  // An upload can fail client-side (timeout/connection drop) after Drive has
+  // already committed the file -- confirmed live 2026-09-23: DSM-101-18 was
+  // logged as a failed upload at 09:13, the same-day retry uploaded it again
+  // at 09:57, leaving two byte-identical copies on Drive with only the second
+  // tracked in state. Adopt an identical (same name + MD5) file already in
+  // the folder instead of uploading another copy. Content match, not name
+  // alone, so a stale wrong file of the same name (see
+  // handleContinuousRecording) is never adopted in place of the right one.
+  const escapedName = fileName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const existing = await drive.files.list({
+    q: `name = '${escapedName}' and '${parentId}' in parents and trashed = false`,
+    fields: "files(id, webViewLink, size, md5Checksum)",
+  });
+  const localSize = String(fs.statSync(localPath).size);
+  const sameSize = (existing.data.files ?? []).filter((f) => f.size === localSize);
+  if (sameSize.length > 0) {
+    const localMd5 = await md5OfFile(localPath);
+    const match = sameSize.find((f) => f.md5Checksum === localMd5);
+    if (match) {
+      console.log(`Identical file already on Drive (an earlier upload that reported failure but went through) -- reusing ${match.id}`);
+      return { id: match.id, webViewLink: match.webViewLink };
+    }
+  }
 
   const res = await drive.files.create({
     requestBody: { name: fileName, parents: [parentId] },
@@ -466,7 +525,17 @@ function expandRowIntoSessions(row, subjectCodeMap) {
   if (rawCourseCodes.length <= 1) {
     const resolved = resolveSubjectCode(row.courseCode, subjectCodeMap);
     return [
-      { ...row, courseCode: resolved.courseCodeWithSession, subjectCode: resolved.subjectCode, clipIndex: 0, expectedClips: 1, stateKey: row.link },
+      {
+        ...row,
+        courseCode: resolved.courseCodeWithSession,
+        subjectCode: resolved.subjectCode,
+        sessionNumber: resolved.sessionNumber,
+        codeResolved: resolved.resolved,
+        rawCourseCode: resolved.rawCourseCode,
+        clipIndex: 0,
+        expectedClips: 1,
+        stateKey: row.link,
+      },
     ];
   }
   const faculties = splitField(row.faculty);
@@ -476,6 +545,9 @@ function expandRowIntoSessions(row, subjectCodeMap) {
       ...row,
       courseCode: resolved.courseCodeWithSession,
       subjectCode: resolved.subjectCode,
+      sessionNumber: resolved.sessionNumber,
+      codeResolved: resolved.resolved,
+      rawCourseCode: resolved.rawCourseCode,
       faculty: faculties[i] ?? faculties[faculties.length - 1] ?? row.faculty,
       clipIndex: i,
       expectedClips: rawCourseCodes.length,
@@ -686,14 +758,47 @@ async function main() {
     sessionsByLink.get(s.link).push(s);
   }
 
-  const plan = sessions.map((session) => {
-    const fileName = buildFileName(config.fileNameTemplate, session);
+  // Two different sessions can produce the exact same file name when the
+  // sheet repeats a session number on one date -- confirmed live 2026-09-19,
+  // "MC (3)/ DSM 101 (12)" in the morning and "DSM 101 (12)/ DSM 103/ DSM 102
+  // (10)" in the afternoon, both -> DSM-101-12_2026-09-19_Arshad.mp4. Since
+  // an existing local file is trusted as "already downloaded", the second
+  // session could pick up (and upload) the first one's file. Give every
+  // repeat after the first (sheet order) a "_2", "_3", ... suffix.
+  const fileNameCounts = new Map();
+  const fileNames = sessions.map((session) => {
+    const base = buildFileName(config.fileNameTemplate, session);
+    const key = `${courseFolder(session.subjectCode)}/${base}`.toLowerCase();
+    const n = (fileNameCounts.get(key) ?? 0) + 1;
+    fileNameCounts.set(key, n);
+    return n === 1 ? base : base.replace(/\.mp4$/, `_${n}.mp4`);
+  });
+
+  const plan = sessions.map((session, i) => {
+    const fileName = fileNames[i];
     const courseFolderName = courseFolder(session.subjectCode);
     const targetDir = config.organizeByCourse ? path.join(config.outputDir, courseFolderName) : config.outputDir;
     const targetPath = path.join(targetDir, fileName);
     const entry = state[session.stateKey] ?? {};
-    const localFileExists = fs.existsSync(targetPath);
+    let localFileExists = fs.existsSync(targetPath);
     const uploaded = !config.driveUpload.enabled || entry.upload?.status === "uploaded";
+    // A session downloaded under an older name (e.g. held for an
+    // unrecognized course code, then resolved by a parser/config fix) would
+    // otherwise be re-fetched from Zoom under its new name -- and the share
+    // link may have expired by then. Move the already-downloaded file over.
+    const priorFile = entry.download?.status === "downloaded" ? entry.download.file : null;
+    if (!localFileExists && !uploaded && priorFile && priorFile !== targetPath && fs.existsSync(priorFile)) {
+      if (DRY_RUN) {
+        console.log(`WOULD MOVE ${priorFile} -> ${targetPath}`);
+      } else {
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.renameSync(priorFile, targetPath);
+        state[session.stateKey] = { ...entry, download: { ...entry.download, file: targetPath } };
+        saveState(config.stateFile, state);
+        console.log(`Moved earlier download to its corrected name: ${priorFile} -> ${targetPath}`);
+      }
+      localFileExists = true;
+    }
     // A session stuck needing a human to pick the split point (see
     // handleContinuousRecording / docs/continuous-recording-splitting.md)
     // must not be treated as needing a normal (re-)download or upload --
@@ -705,8 +810,15 @@ async function main() {
     // uploaded, deleteLocalAfterUpload may have removed the local file on
     // purpose -- that's not "missing," it's "no longer needed."
     const needsDownload = !localFileExists && !uploaded && !pendingManualSplit;
-    const needsUpload = config.driveUpload.enabled && !uploaded && !pendingManualSplit;
-    return { session, fileName, courseFolderName, targetDir, targetPath, localFileExists, uploaded, pendingManualSplit, needsDownload, needsUpload };
+    // A course code that didn't resolve to a canonical "DSM <N>" (a new
+    // sheet format the parser doesn't know yet) still gets downloaded --
+    // Zoom share links expire -- but isn't uploaded, so it can't create a
+    // stray Drive folder like "ME-11-DS". Reported on every run (not just
+    // once) until resolveSubjectCode/subjectCodeMap is fixed, since that fix
+    // is ours to make, unlike a sheet typo.
+    const heldUnresolvedCode = !session.codeResolved;
+    const needsUpload = config.driveUpload.enabled && !uploaded && !pendingManualSplit && !heldUnresolvedCode;
+    return { session, fileName, courseFolderName, targetDir, targetPath, localFileExists, uploaded, pendingManualSplit, heldUnresolvedCode, needsDownload, needsUpload };
   });
   const planByStateKey = new Map(plan.map((p) => [p.session.stateKey, p]));
 
@@ -718,22 +830,54 @@ async function main() {
   // can't be expected to ever get corrected -- state.facultyWarned makes this
   // a one-time flag per session (keyed the same as download/upload status)
   // instead of nagging on every single future run forever.
-  let facultyWarningsStateChanged = false;
+  //
+  // The same flag-once treatment covers the other sheet mistakes seen live:
+  // a course code with no session number ("DSM 103" on 2026-09-14/09-19) and
+  // one session number listed for more than one class (e.g. "DSM 101 (12)"
+  // on 09-10, 09-12 and twice on 09-19). Neither can be corrected from here
+  // (the right number isn't knowable), so they're flagged, never renamed.
+  // state[key].warned[kind] records each one; facultyWarned is the older
+  // field for the same thing, still honored for "unexpected faculty".
+  let warningsStateChanged = false;
+  function warnOnce(p, kind, message) {
+    const entry = state[p.session.stateKey] ?? {};
+    if (entry.warned?.[kind] || (kind === "unexpected faculty" && entry.facultyWarned)) return;
+    console.log(`WARN  (${kind}) ${p.fileName}: ${message}`);
+    if (!DRY_RUN) {
+      state[p.session.stateKey] = { ...entry, warned: { ...entry.warned, [kind]: true } };
+      warningsStateChanged = true;
+    }
+  }
+
+  const plansBySession = new Map();
   for (const p of plan) {
-    if (state[p.session.stateKey]?.facultyWarned) continue;
+    if (!p.session.codeResolved || !p.session.sessionNumber) continue;
+    const key = `${p.session.subjectCode} (${p.session.sessionNumber})`;
+    if (!plansBySession.has(key)) plansBySession.set(key, []);
+    plansBySession.get(key).push(p);
+  }
+
+  for (const p of plan) {
+    if (!p.session.codeResolved) continue; // HOLD line below covers it, every run
     const known = config.courseFaculty?.[p.session.subjectCode];
     if (!matchesKnownFaculty(p.session.faculty, known)) {
-      console.log(
-        `WARN  (unexpected faculty) ${p.fileName}: "${p.session.faculty}" is not a listed instructor for ${p.session.subjectCode}` +
-          (known?.length ? ` (expected one of: ${known.join(", ")})` : "")
+      warnOnce(
+        p,
+        "unexpected faculty",
+        `"${p.session.faculty}" is not a listed instructor for ${p.session.subjectCode}` + (known?.length ? ` (expected one of: ${known.join(", ")})` : "")
       );
-      if (!DRY_RUN) {
-        state[p.session.stateKey] = { ...state[p.session.stateKey], facultyWarned: true };
-        facultyWarningsStateChanged = true;
+    }
+    if (!p.session.sessionNumber) {
+      warnOnce(p, "missing session number", `sheet lists "${p.session.rawCourseCode}" with no session number, so the file name has none`);
+    } else {
+      const same = plansBySession.get(`${p.session.subjectCode} (${p.session.sessionNumber})`);
+      if (same.length > 1) {
+        const others = same.filter((o) => o !== p).map((o) => formatDate(o.session.date));
+        warnOnce(p, "repeated session number", `${p.session.subjectCode} session ${p.session.sessionNumber} is also listed on ${others.join(", ")}`);
       }
     }
   }
-  if (facultyWarningsStateChanged) saveState(config.stateFile, state);
+  if (warningsStateChanged) saveState(config.stateFile, state);
 
   // Tallied into a final `SUMMARY:` line so an unattended caller (see
   // send-report.mjs) can classify the run's outcome by parsing one line
@@ -741,7 +885,12 @@ async function main() {
   const counts = { downloaded: 0, uploaded: 0, fail: 0, skip: 0, pendingSplit: 0 };
 
   for (const p of plan) {
-    if (p.pendingManualSplit) {
+    if (p.heldUnresolvedCode && !p.uploaded) {
+      console.log(
+        `HOLD  (unrecognized course code) ${p.fileName}: "${p.session.rawCourseCode}" doesn't map to a DSM course -- ` +
+          `${p.needsDownload ? "will download" : "downloaded"}, not uploaded until subjectCodeMap/resolveSubjectCode handles it`
+      );
+    } else if (p.pendingManualSplit) {
       console.log(`SKIP  (pending manual split -- run confirm-split.mjs ${p.session.stateKey}) ${p.fileName}`);
       counts.pendingSplit++;
     } else if (!p.needsDownload && !p.needsUpload) {
@@ -771,7 +920,7 @@ async function main() {
     : null;
 
   async function runUpload(p) {
-    if (!config.driveUpload.enabled || p.uploaded) return;
+    if (!config.driveUpload.enabled || p.uploaded || p.heldUnresolvedCode) return;
     console.log(`Uploading -> Drive/${config.driveUpload.termFolderName}/${p.courseFolderName}/${p.fileName}`);
     const uploaded = await uploadToDrive(drive, config.driveUpload, termFolderId, p.courseFolderName, p.targetPath, p.fileName);
     state[p.session.stateKey] = {
@@ -908,7 +1057,7 @@ async function main() {
     fs.rmSync(rawPath, { force: true });
 
     for (const p of plans) {
-      if (!config.driveUpload.enabled) continue;
+      if (!config.driveUpload.enabled || p.heldUnresolvedCode) continue;
       const priorUpload = state[p.session.stateKey]?.upload;
       try {
         console.log(`Uploading -> Drive/${config.driveUpload.termFolderName}/${p.courseFolderName}/${p.fileName}`);
