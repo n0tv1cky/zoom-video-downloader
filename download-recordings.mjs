@@ -556,6 +556,38 @@ function expandRowIntoSessions(row, subjectCodeMap) {
   });
 }
 
+// config.json's sessionOverrides: hand-confirmed corrections for sheet rows
+// (it isn't ours to edit) -- a session number it repeated or left out, or a
+// faculty name it crossed between courses. Keyed
+// "<YYYY-MM-DD> <row start time> <DSM code>" -> { session?, faculty? };
+// date + start time because the sheet can list one course twice on the same
+// date (09-19 had "DSM 101 (12)" both morning and afternoon). An entry whose
+// key no longer matches any session (e.g. the row was edited) is just noted.
+function overrideKey(session) {
+  const startTime = String(session.time ?? "").split(/\s+to\s+/i)[0].trim().toLowerCase();
+  return `${formatDate(session.date)} ${startTime} ${session.subjectCode}`;
+}
+
+function applySessionOverrides(sessions, overrides = {}) {
+  const used = new Set();
+  const result = sessions.map((s) => {
+    const o = overrides[overrideKey(s)];
+    if (!o || typeof o !== "object" || !s.codeResolved) return s;
+    used.add(overrideKey(s));
+    const sessionNumber = o.session ? String(o.session) : s.sessionNumber;
+    return {
+      ...s,
+      sessionNumber,
+      courseCode: sessionNumber ? `${s.subjectCode} (${sessionNumber})` : s.subjectCode,
+      faculty: o.faculty ?? s.faculty,
+    };
+  });
+  for (const key of Object.keys(overrides)) {
+    if (key !== "note" && !used.has(key)) console.log(`NOTE  sessionOverrides entry "${key}" matched no session in the sheet`);
+  }
+  return result;
+}
+
 async function waitForVideoSrc(page, excludeSrc) {
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
@@ -739,7 +771,10 @@ async function main() {
   const authClient = await getGoogleAuthClient(config.googleOAuth.clientSecretFile, config.googleOAuth.tokenFile);
   const rawRows = await fetchRecordingsSheet(authClient, config.recordingsSheet.id, config.recordingsSheet.gid);
   const rows = parseRows(rawRows, config.columns);
-  const sessions = rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap));
+  const sessions = applySessionOverrides(
+    rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)),
+    config.sessionOverrides
+  );
   console.log(
     `Found ${rows.length} row(s) with a recording link` +
       (sessions.length !== rows.length ? ` (${sessions.length} sessions after splitting combined-link rows).` : ".")
@@ -888,6 +923,55 @@ async function main() {
   }
   if (warningsStateChanged) saveState(config.stateFile, state);
 
+  // Keep already-uploaded Drive files named (and foldered) the way the plan
+  // now names them -- otherwise a sessionOverrides entry, a parser fix
+  // (2026-10-06's "ME 11 (DS)" uploaded into a stray "ME-11-DS" folder), or
+  // a corrected sheet row only affects future uploads. Rename/move only,
+  // never delete. state upload.fileName/folder records what Drive holds, so
+  // after the first check this costs no API calls until a name changes.
+  if (config.driveUpload.enabled) {
+    const drive = google.drive({ version: "v3", auth: authClient });
+    const folderNameCache = new Map();
+    const folderName = async (id) => {
+      if (!folderNameCache.has(id)) folderNameCache.set(id, (await drive.files.get({ fileId: id, fields: "name" })).data.name);
+      return folderNameCache.get(id);
+    };
+    let reconcileTermFolderId = null;
+    for (const p of plan) {
+      const upload = state[p.session.stateKey]?.upload;
+      if (upload?.status !== "uploaded" || !upload.fileId || p.heldUnresolvedCode) continue;
+      if (upload.fileName === p.fileName && upload.folder === p.courseFolderName) continue;
+      try {
+        const file = (await drive.files.get({ fileId: upload.fileId, fields: "name, parents, trashed" })).data;
+        if (file.trashed) continue;
+        const currentFolder = await folderName(file.parents[0]);
+        const wrongFolder = config.driveUpload.organizeByCourse && currentFolder !== p.courseFolderName;
+        if (file.name !== p.fileName || wrongFolder) {
+          const from = `${currentFolder}/${file.name}`;
+          const to = `${wrongFolder ? p.courseFolderName : currentFolder}/${p.fileName}`;
+          if (DRY_RUN) {
+            console.log(`WOULD RENAME on Drive ${from} -> ${to}`);
+            continue;
+          }
+          const update = { fileId: upload.fileId, requestBody: { name: p.fileName } };
+          if (wrongFolder) {
+            reconcileTermFolderId ??= await findOrCreateDriveFolder(drive, config.driveUpload.rootFolderId, config.driveUpload.termFolderName);
+            update.addParents = await findOrCreateDriveFolder(drive, reconcileTermFolderId, p.courseFolderName);
+            update.removeParents = file.parents.join(",");
+          }
+          await drive.files.update(update);
+          console.log(`RENAMED on Drive ${from} -> ${to}`);
+        }
+        if (!DRY_RUN) {
+          state[p.session.stateKey] = { ...state[p.session.stateKey], upload: { ...upload, fileName: p.fileName, folder: p.courseFolderName } };
+          saveState(config.stateFile, state);
+        }
+      } catch (err) {
+        console.log(`WARN: couldn't check/rename Drive file for ${p.fileName}: ${err.message}`);
+      }
+    }
+  }
+
   // Tallied into a final `SUMMARY:` line so an unattended caller (see
   // send-report.mjs) can classify the run's outcome by parsing one line
   // instead of re-deriving counts from loosely-matched OK/FAIL/SKIP text.
@@ -934,7 +1018,7 @@ async function main() {
     const uploaded = await uploadToDrive(drive, config.driveUpload, termFolderId, p.courseFolderName, p.targetPath, p.fileName);
     state[p.session.stateKey] = {
       ...state[p.session.stateKey],
-      upload: { status: "uploaded", fileId: uploaded.id, webViewLink: uploaded.webViewLink, at: new Date().toISOString() },
+      upload: { status: "uploaded", fileId: uploaded.id, webViewLink: uploaded.webViewLink, fileName: p.fileName, folder: p.courseFolderName, at: new Date().toISOString() },
     };
     saveState(config.stateFile, state);
     console.log(`OK    ${uploaded.webViewLink}`);
@@ -1073,7 +1157,7 @@ async function main() {
         const uploaded = await uploadToDrive(drive, config.driveUpload, termFolderId, p.courseFolderName, p.targetPath, p.fileName);
         state[p.session.stateKey] = {
           ...state[p.session.stateKey],
-          upload: { status: "uploaded", fileId: uploaded.id, webViewLink: uploaded.webViewLink, at: new Date().toISOString() },
+          upload: { status: "uploaded", fileId: uploaded.id, webViewLink: uploaded.webViewLink, fileName: p.fileName, folder: p.courseFolderName, at: new Date().toISOString() },
         };
         saveState(config.stateFile, state);
         console.log(`OK    ${uploaded.webViewLink}`);

@@ -81,6 +81,23 @@
     "DS": "DSM 103"
   },
 
+  "sessionOverrides": {
+    "note": "Hand-confirmed corrections to recordings-sheet rows (the sheet isn't ours to edit), keyed \"<date> <row start time> <DSM code>\" -> { session?, faculty? }. The sync applies them to file names and renames the matching Drive files on its next run. Session numbers: DSM 101/104/108's repeated numbers fill their gaps exactly in date order; DSM 103 had several back-to-back sessions the sheet wasn't updated for, so numbered by date/time order (confirmed by the user 2026-10-08; no recording exists for 103 session 4). Faculty: the 09-02/09-04 rows had instructors crossed between courses -- these were hand-corrected on Drive earlier and are recorded here so the sync keeps them.",
+    "2026-08-20 7:00pm DSM 103": { "session": "2" },
+    "2026-08-22 2:45pm DSM 103": { "session": "3" },
+    "2026-09-14 7:00pm DSM 103": { "session": "8" },
+    "2026-09-19 2:45pm DSM 103": { "session": "11" },
+    "2026-09-21 7:00pm DSM 103": { "session": "12" },
+    "2026-09-12 10:45am DSM 101": { "session": "13" },
+    "2026-09-19 10:45am DSM 101": { "session": "16" },
+    "2026-09-19 2:45pm DSM 101": { "session": "17" },
+    "2026-09-19 10:45am DSM 104": { "session": "4" },
+    "2026-09-18 7:00pm DSM 108": { "session": "4" },
+    "2026-09-02 7:00pm DSM 101": { "faculty": "Suman Majumdar" },
+    "2026-09-02 7:00pm DSM 107": { "faculty": "Karthikeya Naraparaju" },
+    "2026-09-04 7:00pm DSM 106": { "faculty": "Jagannathan Srinath" }
+  },
+
   "courseFaculty": {
     "note": "Transcribed from the schedule sheet's own instructor legend (last tab) -- used only to flag (never auto-correct) a Faculty-column value in the recordings sheet that doesn't match any listed instructor for that course. Re-transcribe if the legend changes (e.g. next term).",
     "DSM 101": ["Prof. Suman Majumdar", "Prof. Arshad", "Prof. Ruchi Sharma", "Prof. Pritee Sharma"],
