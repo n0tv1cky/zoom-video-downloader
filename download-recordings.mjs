@@ -774,6 +774,13 @@ async function main() {
     return n === 1 ? base : base.replace(/\.mp4$/, `_${n}.mp4`);
   });
 
+  const plannedPaths = new Set(
+    sessions.map((session, i) => {
+      const dir = config.organizeByCourse ? path.join(config.outputDir, courseFolder(session.subjectCode)) : config.outputDir;
+      return path.join(dir, fileNames[i]);
+    })
+  );
+
   const plan = sessions.map((session, i) => {
     const fileName = fileNames[i];
     const courseFolderName = courseFolder(session.subjectCode);
@@ -787,7 +794,9 @@ async function main() {
     // otherwise be re-fetched from Zoom under its new name -- and the share
     // link may have expired by then. Move the already-downloaded file over.
     const priorFile = entry.download?.status === "downloaded" ? entry.download.file : null;
-    if (!localFileExists && !uploaded && priorFile && priorFile !== targetPath && fs.existsSync(priorFile)) {
+    // Never take a file that is some other session's current target (e.g. a
+    // collision suffix shifted because a same-name row was inserted earlier).
+    if (!localFileExists && !uploaded && priorFile && priorFile !== targetPath && !plannedPaths.has(priorFile) && fs.existsSync(priorFile)) {
       if (DRY_RUN) {
         console.log(`WOULD MOVE ${priorFile} -> ${targetPath}`);
       } else {
