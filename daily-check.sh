@@ -59,8 +59,14 @@ echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — run start${retry_tag} ====="
 IN_ACTIVE_HOURS=$(node -e "
 const config = require('/Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings/config.json');
 const { start, end } = config.schedule.activeHours;
-const now = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
-console.log(now >= start && now <= end ? 'yes' : 'no');
+// Grace past 'end': launchd can fire the last slot a little late (confirmed
+// live 2026-10-11 -- the 21:00 run started at 21:01:03 and was skipped as
+// 'outside active hours', so the day's final check never ran). Comparing
+// HH:MM strings with no grace treated 21:01 as past 21:00.
+const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+const d = new Date();
+const nowMin = d.getHours() * 60 + d.getMinutes();
+console.log(nowMin >= toMin(start) - 5 && nowMin <= toMin(end) + 30 ? 'yes' : 'no');
 ")
 if [ "$IN_ACTIVE_HOURS" != "yes" ]; then
   echo "Outside config.json's schedule.activeHours -- skipping this run."
@@ -80,6 +86,16 @@ fi
 # via channel: "chrome", no visible window) -- so this no longer needs the
 # lid open at 9am, only awake (which caffeinate -i above still can't
 # guarantee against a manual lid-close, only idle sleep).
+# Right after a scheduled wake the network often isn't up yet -- confirmed
+# live 2026-10-10: the 09:00 run and its 09:31 retry both crashed on
+# "getaddrinfo ENOTFOUND", and neither could even email its crash report.
+# Wait up to 5 minutes for DNS before starting instead of failing outright;
+# if it never comes up, run anyway so the normal crash/retry path applies.
+for _ in $(seq 1 30); do
+  if node -e "require('dns').lookup('oauth2.googleapis.com', (e) => process.exit(e ? 1 : 0))" 2>/dev/null; then break; fi
+  sleep 10
+done
+
 set +e
 # ZOOM_SYNC_SKIP_AUTO_REPORT tells download-recordings.mjs not to email its
 # own report -- this script already captures the same output to $SYNC_LOG

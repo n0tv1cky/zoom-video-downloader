@@ -327,23 +327,32 @@ function buildFileName(template, row) {
 // Sethia) in the parentheses where the session number used to be. That last
 // one fell through to the unchanged-abbreviation fallback and created
 // "ME-11-DS"/"ME-12-DS" Drive folders. A trailing parenthetical containing
-// letters is an annotation, never a course -- notably "(DS)" must NOT be
-// looked up in subjectCodeMap, where "DS" means DSM 103.
+// letters (and no digits) is an annotation, never a course -- notably "(DS)"
+// must NOT be looked up in subjectCodeMap, where "DS" means DSM 103.
+//
+// One recording can also cover several sessions: "DSM 102 (12&13)" on
+// 2026-10-10 (held as unrecognized until this was handled). Any list of
+// numbers joined by &, comma, +, "and" or a dash becomes "12-13".
+const SESSION_LIST = String.raw`\d+(?:\s*(?:&|,|\+|-|and)\s*\d+)*`;
+function normalizeSessionList(text) {
+  return text == null ? null : text.match(/\d+/g).join("-");
+}
+
 function resolveSubjectCode(rawCourseCode, subjectCodeMap) {
   const raw = String(rawCourseCode ?? "").trim().replace(/\s+/g, " ");
-  const core = raw.replace(/\s*\([^()]*[A-Za-z][^()]*\)\s*$/, "").trim();
+  const core = raw.replace(/\s*\([^()\d]*[A-Za-z][^()\d]*\)\s*$/, "").trim();
   let subjectCode = core;
   let sessionNumber = null;
   // Canonical "DSM <N>" first, so a bare "DSM 103" isn't misread as
   // abbreviation "DSM", session 103 by the abbreviation rule below.
-  const dsm = core.match(/^DSM\s*-?\s*(\d+)\s*(?:\(\s*(\d+)\s*\))?$/i);
-  const abbr = core.match(/^([A-Za-z]+)\s*-?\s*(?:\(\s*(\d+)\s*\)|(\d+))?$/);
+  const dsm = core.match(new RegExp(String.raw`^DSM\s*-?\s*(\d+)\s*(?:\(\s*(${SESSION_LIST})\s*\))?$`, "i"));
+  const abbr = core.match(new RegExp(String.raw`^([A-Za-z]+)\s*-?\s*(?:\(\s*(${SESSION_LIST})\s*\)|(\d+))?$`, "i"));
   if (dsm) {
     subjectCode = `DSM ${dsm[1]}`;
-    sessionNumber = dsm[2] ?? null;
+    sessionNumber = normalizeSessionList(dsm[2] ?? null);
   } else if (abbr) {
     subjectCode = subjectCodeMap[abbr[1].toUpperCase()] ?? abbr[1];
-    sessionNumber = abbr[2] ?? abbr[3] ?? null;
+    sessionNumber = normalizeSessionList(abbr[2] ?? abbr[3] ?? null);
   }
   return {
     subjectCode,
@@ -896,9 +905,12 @@ async function main() {
   const plansBySession = new Map();
   for (const p of plan) {
     if (!p.session.codeResolved || !p.session.sessionNumber) continue;
-    const key = `${p.session.subjectCode} (${p.session.sessionNumber})`;
-    if (!plansBySession.has(key)) plansBySession.set(key, []);
-    plansBySession.get(key).push(p);
+    // A multi-session recording ("12-13") counts as each of its sessions.
+    for (const n of p.session.sessionNumber.split("-")) {
+      const key = `${p.session.subjectCode} (${n})`;
+      if (!plansBySession.has(key)) plansBySession.set(key, []);
+      plansBySession.get(key).push(p);
+    }
   }
 
   for (const p of plan) {
@@ -914,10 +926,13 @@ async function main() {
     if (!p.session.sessionNumber) {
       warnOnce(p, "missing session number", `sheet lists "${p.session.rawCourseCode}" with no session number, so the file name has none`);
     } else {
-      const same = plansBySession.get(`${p.session.subjectCode} (${p.session.sessionNumber})`);
-      if (same.length > 1) {
-        const others = same.filter((o) => o !== p).map((o) => formatDate(o.session.date));
-        warnOnce(p, "repeated session number", `${p.session.subjectCode} session ${p.session.sessionNumber} is also listed on ${others.join(", ")}`);
+      for (const n of p.session.sessionNumber.split("-")) {
+        const others = plansBySession.get(`${p.session.subjectCode} (${n})`).filter((o) => o !== p);
+        if (others.length > 0) {
+          const dates = others.map((o) => formatDate(o.session.date)).join(", ");
+          warnOnce(p, "repeated session number", `${p.session.subjectCode} session ${n} is also listed on ${dates}`);
+          break;
+        }
       }
     }
   }
@@ -977,12 +992,23 @@ async function main() {
   // instead of re-deriving counts from loosely-matched OK/FAIL/SKIP text.
   const counts = { downloaded: 0, uploaded: 0, fail: 0, skip: 0, pendingSplit: 0 };
 
+  // The first HOLD for a session emails; later runs log "STILL HELD", which
+  // the report shows only alongside an email that's going out anyway --
+  // re-alerting on every 4-hourly run sent 7 identical emails for one
+  // "DSM 102 (12&13)" recording over 2026-10-10..12.
+  let heldStateChanged = false;
   for (const p of plan) {
     if (p.heldUnresolvedCode && !p.uploaded) {
+      const entry = state[p.session.stateKey] ?? {};
+      const tag = entry.warned?.held ? "STILL HELD" : "HOLD ";
       console.log(
-        `HOLD  (unrecognized course code) ${p.fileName}: "${p.session.rawCourseCode}" doesn't map to a DSM course -- ` +
+        `${tag} (unrecognized course code) ${p.fileName}: "${p.session.rawCourseCode}" doesn't map to a DSM course -- ` +
           `${p.needsDownload ? "will download" : "downloaded"}, not uploaded until subjectCodeMap/resolveSubjectCode handles it`
       );
+      if (!entry.warned?.held && !DRY_RUN) {
+        state[p.session.stateKey] = { ...entry, warned: { ...entry.warned, held: true } };
+        heldStateChanged = true;
+      }
     } else if (p.pendingManualSplit) {
       console.log(`SKIP  (pending manual split -- run confirm-split.mjs ${p.session.stateKey}) ${p.fileName}`);
       counts.pendingSplit++;
@@ -991,6 +1017,8 @@ async function main() {
       counts.skip++;
     }
   }
+
+  if (heldStateChanged) saveState(config.stateFile, state);
 
   const pending = plan.filter((p) => p.needsDownload || p.needsUpload).slice(0, LIMIT);
   if (pending.length === 0) {
