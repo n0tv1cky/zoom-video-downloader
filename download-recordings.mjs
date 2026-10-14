@@ -29,6 +29,7 @@ import { format } from "node:util";
 import { createHash } from "node:crypto";
 import { mergeLocalConfig } from "./lib/configLocal.mjs";
 import { probeDurationSeconds, detectSilenceGaps, pickCutPoints, splitByCutPoints } from "./lib/continuousSplit.mjs";
+import { writeSessionLedger, crossCheckAttendance } from "./lib/sessionLedger.mjs";
 
 // Mirrors every console.log/console.error call into logLines (in addition to
 // actually printing, unchanged) so a manual run can email itself a report
@@ -572,9 +573,12 @@ function expandRowIntoSessions(row, subjectCodeMap) {
 // date + start time because the sheet can list one course twice on the same
 // date (09-19 had "DSM 101 (12)" both morning and afternoon). An entry whose
 // key no longer matches any session (e.g. the row was edited) is just noted.
+function sessionStartTime(session) {
+  return String(session.time ?? "").split(/\s+to\s+/i)[0].trim().toLowerCase();
+}
+
 function overrideKey(session) {
-  const startTime = String(session.time ?? "").split(/\s+to\s+/i)[0].trim().toLowerCase();
-  return `${formatDate(session.date)} ${startTime} ${session.subjectCode}`;
+  return `${formatDate(session.date)} ${sessionStartTime(session)} ${session.subjectCode}`;
 }
 
 // config.json's sessionOffsets: a standing shift for a course whose sheet
@@ -1006,6 +1010,23 @@ async function main() {
         console.log(`WARN: couldn't check/rename Drive file for ${p.fileName}: ${err.message}`);
       }
     }
+  }
+
+  // Publish the corrected numbering for the other tools, and check it
+  // against attendance's independent count -- see lib/sessionLedger.mjs.
+  const ledger = config.sessionLedger ?? {};
+  if (!DRY_RUN && ledger.file) {
+    writeSessionLedger(expandHome(ledger.file), plan, state, { term: config.term, formatDate, startTime: sessionStartTime });
+  }
+  if (ledger.attendanceRunsFile) {
+    crossCheckAttendance({
+      plan,
+      runsFile: expandHome(ledger.attendanceRunsFile),
+      warnedFile: expandHome(ledger.crossCheckWarnedFile ?? "~/.zoom-recordings-sync/attendance-crosscheck-warned.json"),
+      since: ledger.crossCheckSince,
+      formatDate,
+      dryRun: DRY_RUN,
+    });
   }
 
   // Tallied into a final `SUMMARY:` line so an unattended caller (see
