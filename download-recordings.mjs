@@ -577,13 +577,33 @@ function overrideKey(session) {
   return `${formatDate(session.date)} ${startTime} ${session.subjectCode}`;
 }
 
-function applySessionOverrides(sessions, overrides = {}) {
+// config.json's sessionOffsets: a standing shift for a course whose sheet
+// count runs consistently behind date order from some date on (DSM 103 is 1
+// behind from 2026-10-08, after an extra unnumbered 09-19 class) -- so each
+// new recording doesn't need its own sessionOverrides entry. The latest rule
+// whose `from` is on or before the session's date applies.
+function offsetSessionNumber(session, offsets = {}) {
+  const rules = Array.isArray(offsets[session.subjectCode]) ? offsets[session.subjectCode] : [];
+  const date = formatDate(session.date);
+  const rule = rules.filter((r) => r.from <= date).sort((a, b) => a.from.localeCompare(b.from)).at(-1);
+  if (!rule || !session.sessionNumber) return session.sessionNumber;
+  return session.sessionNumber
+    .split("-")
+    .map((n) => String(Number(n) + rule.add))
+    .join("-");
+}
+
+function applySessionOverrides(sessions, overrides = {}, offsets = {}) {
   const used = new Set();
   const result = sessions.map((s) => {
+    if (!s.codeResolved) return s;
     const o = overrides[overrideKey(s)];
-    if (!o || typeof o !== "object" || !s.codeResolved) return s;
+    if (!o || typeof o !== "object") {
+      const shifted = offsetSessionNumber(s, offsets);
+      return shifted === s.sessionNumber ? s : { ...s, sessionNumber: shifted, courseCode: `${s.subjectCode} (${shifted})` };
+    }
     used.add(overrideKey(s));
-    const sessionNumber = o.session ? String(o.session) : s.sessionNumber;
+    const sessionNumber = o.session ? String(o.session) : offsetSessionNumber(s, offsets);
     return {
       ...s,
       sessionNumber,
@@ -782,7 +802,8 @@ async function main() {
   const rows = parseRows(rawRows, config.columns);
   const sessions = applySessionOverrides(
     rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)),
-    config.sessionOverrides
+    config.sessionOverrides,
+    config.sessionOffsets
   );
   console.log(
     `Found ${rows.length} row(s) with a recording link` +
