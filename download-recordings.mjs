@@ -566,59 +566,86 @@ function expandRowIntoSessions(row, subjectCodeMap) {
   });
 }
 
-// config.json's sessionOverrides: hand-confirmed corrections for sheet rows
-// (it isn't ours to edit) -- a session number it repeated or left out, or a
-// faculty name it crossed between courses. Keyed
-// "<YYYY-MM-DD> <row start time> <DSM code>" -> { session?, faculty? };
-// date + start time because the sheet can list one course twice on the same
-// date (09-19 had "DSM 101 (12)" both morning and afternoon). An entry whose
-// key no longer matches any session (e.g. the row was edited) is just noted.
+// A class's identity is (course, date, start time); "session N" is only a
+// label derived from it: N = the Nth class of that course actually held,
+// in date/time order -- the rule agreed across this sync, projects/attendance
+// and projects/msdsm-notes (2026-10-14). The recordings sheet's own
+// "(N)" labels drifted every way possible (numbers repeated across dates,
+// left out, 24 skipped, an extra 09-19 class never counted) and needed a
+// growing pile of hand-typed corrections; deriving the number makes every
+// one of them unnecessary. The sheet's label is still kept, as
+// sheetSessionNumber, and a disagreement is flagged -- not obeyed.
+//
+// Held is not the same as recorded: DSM 102 met on 2026-09-08 (the sheet and
+// timetable both number the 09-11 class as 9) but no recording was ever
+// listed. config.json's heldWithoutRecording lists such classes so they still
+// take their place in the count. A recording covering several sessions
+// ("DSM 102 (12&13)") takes as many places as the sheet gives it numbers.
+function startMinutes(timeText) {
+  const m = String(timeText ?? "").match(/(\d{1,2})(?::(\d{2}))?\s*([ap]m)?/i);
+  if (!m) return 0;
+  let h = Number(m[1]) % 12;
+  if (/pm/i.test(m[3] ?? "")) h += 12;
+  if (!m[3]) h = Number(m[1]);
+  return h * 60 + Number(m[2] ?? 0);
+}
+
 function sessionStartTime(session) {
   return String(session.time ?? "").split(/\s+to\s+/i)[0].trim().toLowerCase();
 }
 
-function overrideKey(session) {
+function classKey(session) {
   return `${formatDate(session.date)} ${sessionStartTime(session)} ${session.subjectCode}`;
 }
 
-// config.json's sessionOffsets: a standing shift for a course whose sheet
-// count runs consistently behind date order from some date on (DSM 103 is 1
-// behind from 2026-10-08, after an extra unnumbered 09-19 class) -- so each
-// new recording doesn't need its own sessionOverrides entry. The latest rule
-// whose `from` is on or before the session's date applies.
-function offsetSessionNumber(session, offsets = {}) {
-  const rules = Array.isArray(offsets[session.subjectCode]) ? offsets[session.subjectCode] : [];
-  const date = formatDate(session.date);
-  const rule = rules.filter((r) => r.from <= date).sort((a, b) => a.from.localeCompare(b.from)).at(-1);
-  if (!rule || !session.sessionNumber) return session.sessionNumber;
-  return session.sessionNumber
-    .split("-")
-    .map((n) => String(Number(n) + rule.add))
-    .join("-");
-}
-
-function applySessionOverrides(sessions, overrides = {}, offsets = {}) {
+// config.json's sessionOverrides: hand-confirmed corrections to anything
+// else a sheet row got wrong -- currently only faculty names crossed between
+// courses -- keyed the same "<YYYY-MM-DD> <start time> <DSM code>" way. An
+// entry whose key no longer matches any class is just noted.
+function applyClassOverrides(sessions, overrides = {}) {
   const used = new Set();
   const result = sessions.map((s) => {
-    if (!s.codeResolved) return s;
-    const o = overrides[overrideKey(s)];
-    if (!o || typeof o !== "object") {
-      const shifted = offsetSessionNumber(s, offsets);
-      return shifted === s.sessionNumber ? s : { ...s, sessionNumber: shifted, courseCode: `${s.subjectCode} (${shifted})` };
-    }
-    used.add(overrideKey(s));
-    const sessionNumber = o.session ? String(o.session) : offsetSessionNumber(s, offsets);
-    return {
-      ...s,
-      sessionNumber,
-      courseCode: sessionNumber ? `${s.subjectCode} (${sessionNumber})` : s.subjectCode,
-      faculty: o.faculty ?? s.faculty,
-    };
+    const o = s.codeResolved ? overrides[classKey(s)] : null;
+    if (!o || typeof o !== "object") return s;
+    used.add(classKey(s));
+    return { ...s, faculty: o.faculty ?? s.faculty };
   });
   for (const key of Object.keys(overrides)) {
     if (key !== "note" && !used.has(key)) console.log(`NOTE  sessionOverrides entry "${key}" matched no session in the sheet`);
   }
   return result;
+}
+
+function deriveSessionNumbers(sessions, heldWithoutRecording = []) {
+  const entries = [
+    ...sessions.filter((s) => s.codeResolved).map((s, i) => ({ s, i })),
+    ...heldWithoutRecording.map((h) => ({ placeholder: true, course: h.course, date: h.date, start: h.start })),
+  ].map((e) => {
+    const course = e.placeholder ? e.course : e.s.subjectCode;
+    const date = e.placeholder ? e.date : formatDate(e.s.date);
+    const start = startMinutes(e.placeholder ? e.start : sessionStartTime(e.s));
+    const width = e.placeholder ? 1 : Math.max(1, String(e.s.sessionNumber ?? "").split("-").filter(Boolean).length);
+    return { ...e, course, date, start, width, order: e.placeholder ? -1 : e.s.clipIndex };
+  });
+  entries.sort((a, b) => a.course.localeCompare(b.course) || a.date.localeCompare(b.date) || a.start - b.start || a.order - b.order);
+
+  const derived = new Map();
+  let course = null;
+  let n = 0;
+  for (const e of entries) {
+    if (e.course !== course) {
+      course = e.course;
+      n = 0;
+    }
+    const label = e.width > 1 ? `${n + 1}-${n + e.width}` : String(n + 1);
+    n += e.width;
+    if (!e.placeholder) derived.set(e.s, label);
+  }
+  return sessions.map((s) => {
+    if (!derived.has(s)) return s;
+    const sessionNumber = derived.get(s);
+    return { ...s, sheetSessionNumber: s.sessionNumber, sessionNumber, courseCode: `${s.subjectCode} (${sessionNumber})` };
+  });
 }
 
 async function waitForVideoSrc(page, excludeSrc) {
@@ -804,10 +831,9 @@ async function main() {
   const authClient = await getGoogleAuthClient(config.googleOAuth.clientSecretFile, config.googleOAuth.tokenFile);
   const rawRows = await fetchRecordingsSheet(authClient, config.recordingsSheet.id, config.recordingsSheet.gid);
   const rows = parseRows(rawRows, config.columns);
-  const sessions = applySessionOverrides(
-    rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)),
-    config.sessionOverrides,
-    config.sessionOffsets
+  const sessions = deriveSessionNumbers(
+    applyClassOverrides(rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)), config.sessionOverrides),
+    config.heldWithoutRecording?.classes
   );
   console.log(
     `Found ${rows.length} row(s) with a recording link` +
@@ -927,17 +953,6 @@ async function main() {
     }
   }
 
-  const plansBySession = new Map();
-  for (const p of plan) {
-    if (!p.session.codeResolved || !p.session.sessionNumber) continue;
-    // A multi-session recording ("12-13") counts as each of its sessions.
-    for (const n of p.session.sessionNumber.split("-")) {
-      const key = `${p.session.subjectCode} (${n})`;
-      if (!plansBySession.has(key)) plansBySession.set(key, []);
-      plansBySession.get(key).push(p);
-    }
-  }
-
   for (const p of plan) {
     if (!p.session.codeResolved) continue; // HOLD line below covers it, every run
     const known = config.courseFaculty?.[p.session.subjectCode];
@@ -948,23 +963,24 @@ async function main() {
         `"${p.session.faculty}" is not a listed instructor for ${p.session.subjectCode}` + (known?.length ? ` (expected one of: ${known.join(", ")})` : "")
       );
     }
-    if (!p.session.sessionNumber) {
-      warnOnce(p, "missing session number", `sheet lists "${p.session.rawCourseCode}" with no session number, so the file name has none`);
-    } else {
-      for (const n of p.session.sessionNumber.split("-")) {
-        const others = plansBySession.get(`${p.session.subjectCode} (${n})`).filter((o) => o !== p);
-        if (others.length > 0) {
-          const dates = others.map((o) => formatDate(o.session.date)).join(", ");
-          warnOnce(p, "repeated session number", `${p.session.subjectCode} session ${n} is also listed on ${dates}`);
-          break;
-        }
-      }
+    // The number itself is derived (see deriveSessionNumbers); a sheet label
+    // that disagrees is worth one look -- it usually means a sheet typo, but
+    // it can also mean a class was held that has no recording, which belongs
+    // in config.json's heldWithoutRecording.
+    const since = config.heldWithoutRecording?.labelCheckSince;
+    if (p.session.sheetSessionNumber !== p.session.sessionNumber && (!since || formatDate(p.session.date) >= since)) {
+      warnOnce(
+        p,
+        "sheet session number differs",
+        `sheet says "${p.session.rawCourseCode}"; by date order this is ${p.session.subjectCode} session ${p.session.sessionNumber}` +
+          " -- a sheet typo, or a class held without a recording (add it to heldWithoutRecording)"
+      );
     }
   }
   if (warningsStateChanged) saveState(config.stateFile, state);
 
   // Keep already-uploaded Drive files named (and foldered) the way the plan
-  // now names them -- otherwise a sessionOverrides entry, a parser fix
+  // now names them -- otherwise a newly listed earlier class shifting the derived numbers, a parser fix
   // (2026-10-06's "ME 11 (DS)" uploaded into a stray "ME-11-DS" folder), or
   // a corrected sheet row only affects future uploads. Rename/move only,
   // never delete. state upload.fileName/folder records what Drive holds, so

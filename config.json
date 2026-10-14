@@ -82,31 +82,18 @@
   },
 
   "sessionOverrides": {
-    "note": "Hand-confirmed corrections to recordings-sheet rows (the sheet isn't ours to edit), keyed \"<date> <row start time> <DSM code>\" -> { session?, faculty? }. The sync applies them to file names and renames the matching Drive files on its next run. Session numbers: DSM 101/104/108's repeated numbers fill their gaps exactly in date order; DSM 103 had several back-to-back sessions the sheet wasn't updated for, so every DSM 103 recording is numbered strictly by date/time order, 1, 2, 3, ... with no gaps (user's choice 2026-10-08, re-confirmed 2026-10-14 over the official timetable, which has no slot for the extra 09-19 class). The first pass on 2026-10-08 wrongly kept the sheet's numbers from 08-29 on, leaving a false gap at 4 -- the timetable confirms 08-29 is session 4. DSM 101 stays in date order where the timetable swaps 09-10/09-12 (user's choice). Faculty: the 09-02/09-04 rows had instructors crossed between courses -- these were hand-corrected on Drive earlier and are recorded here so the sync keeps them.",
-    "2026-08-20 7:00pm DSM 103": { "session": "2" },
-    "2026-08-22 2:45pm DSM 103": { "session": "3" },
-    "2026-08-29 2:45pm DSM 103": { "session": "4" },
-    "2026-09-03 7:00pm DSM 103": { "session": "5" },
-    "2026-09-05 2:45pm DSM 103": { "session": "6" },
-    "2026-09-14 7:00pm DSM 103": { "session": "7" },
-    "2026-09-17 7:00pm DSM 103": { "session": "8" },
-    "2026-09-18 7:00pm DSM 103": { "session": "9" },
-    "2026-09-19 2:45pm DSM 103": { "session": "10" },
-    "2026-09-21 7:00pm DSM 103": { "session": "11" },
-    "2026-09-12 10:45am DSM 101": { "session": "13" },
-    "2026-09-19 10:45am DSM 101": { "session": "16" },
-    "2026-09-19 2:45pm DSM 101": { "session": "17" },
-    "2026-09-19 10:45am DSM 104": { "session": "4" },
-    "2026-09-18 7:00pm DSM 108": { "session": "4" },
+    "note": "Hand-confirmed corrections to recordings-sheet rows other than the session number (which is derived, see heldWithoutRecording), keyed \"<date> <row start time> <DSM code>\". Currently only faculty: the 09-02/09-04 rows had instructors crossed between courses; these were hand-corrected on Drive and are recorded here so the sync keeps them.",
     "2026-09-02 7:00pm DSM 101": { "faculty": "Suman Majumdar" },
     "2026-09-02 7:00pm DSM 107": { "faculty": "Karthikeya Naraparaju" },
     "2026-09-04 7:00pm DSM 106": { "faculty": "Jagannathan Srinath" }
   },
 
-  "sessionOffsets": {
-    "note": "Standing per-course shift added to the recordings sheet's session number from a date onward, for when the sheet's count runs consistently behind date order -- so each new recording doesn't need its own sessionOverrides entry. Per course, the latest rule whose 'from' is on or before the session date applies; an explicit sessionOverrides entry always wins. DSM 103: the sheet (like the timetable) has no number for the extra 09-19 class, so from 10-08 on it is 1 behind date order (sheet 11 on 10-08 = session 12). DSM 101: the sheet and timetable labels skip 24 (10-07 is 23, 10-12 is labelled 25), but 10-12 was the 24th DSM 101 class held -- attendance (which counts held classes) marked it Session 24 -- so from 10-12 on the sheet is 1 ahead.",
-    "DSM 103": [{ "from": "2026-10-08", "add": 1 }],
-    "DSM 101": [{ "from": "2026-10-12", "add": -1 }]
+  "heldWithoutRecording": {
+    "note": "Session numbers are derived, never typed: a class is identified by course + date + start time, and session N is the Nth class of that course actually held, in date/time order -- the rule shared with projects/attendance and projects/msdsm-notes (2026-10-14). Held isn't the same as recorded, so classes that met but have no recording in the recordings sheet go here to keep their place in the count. DSM 102 2026-09-08: on the timetable as DSM 102 (8), no recording listed, and both the sheet and the timetable number the 09-11 class as 9. labelCheckSince: from this date, a sheet label that disagrees with the derived number is flagged once (earlier mislabels are already known).",
+    "labelCheckSince": "2026-10-14",
+    "classes": [
+      { "course": "DSM 102", "date": "2026-09-08", "start": "7:00pm" }
+    ]
   },
 
   "sessionLedger": {
