@@ -750,10 +750,7 @@ async function downloadToFile(page, mp4Url, outputDir, fileName) {
   const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   const userAgent = await page.browser().userAgent();
 
-  const res = await fetch(mp4Url, {
-    headers: { Cookie: cookieHeader, Referer: page.url(), "User-Agent": userAgent },
-  });
-  if (!res.ok || !res.body) throw new Error(`Video download failed: HTTP ${res.status}`);
+  const baseHeaders = { Cookie: cookieHeader, Referer: page.url(), "User-Agent": userAgent };
 
   // Stream to a .partial sibling first, then rename onto the real path only
   // once the transfer has fully succeeded. A killed/crashed/interrupted
@@ -764,16 +761,48 @@ async function downloadToFile(page, mp4Url, outputDir, fileName) {
   // corrupt file at the path localFileExists checks -- even under a hard
   // kill with no chance to run catch/cleanup, since the rename only happens
   // after pipeline() has already resolved successfully.
+  //
+  // A dropped connection mid-body ("terminated", undici's error for it) used
+  // to throw away the whole transfer -- confirmed live 2026-10-17: the
+  // DSM-101 10-16 clip failed this way at 09:00 and again on the 09:53
+  // retry, while the other clip from the same recording came through fine.
+  // Resume from the bytes already on disk with a Range request instead, a
+  // few times with backoff, and only accept the file once its size matches
+  // the total the server reported -- so a short body can never pass as done.
   const targetPath = path.join(outputDir, fileName);
   const partialPath = `${targetPath}.partial`;
-  try {
-    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(partialPath));
-    fs.renameSync(partialPath, targetPath);
-  } catch (err) {
-    fs.rmSync(partialPath, { force: true });
-    throw err;
+  const MAX_ATTEMPTS = 6;
+  fs.rmSync(partialPath, { force: true });
+  let expectedTotal = null;
+  for (let attempt = 1; ; attempt++) {
+    const have = fs.existsSync(partialPath) ? fs.statSync(partialPath).size : 0;
+    try {
+      const res = await fetch(mp4Url, { headers: have > 0 ? { ...baseHeaders, Range: `bytes=${have}-` } : baseHeaders });
+      const resumed = have > 0 && res.status === 206;
+      if (!res.ok || !res.body) {
+        const err = new Error(`Video download failed: HTTP ${res.status}`);
+        err.fatal = res.status === 401 || res.status === 403 || res.status === 404;
+        throw err;
+      }
+      if (have > 0 && !resumed) fs.rmSync(partialPath, { force: true }); // server ignored Range: start over
+      const range = res.headers.get("content-range")?.match(/\/(\d+)$/);
+      const length = Number(res.headers.get("content-length")) || null;
+      expectedTotal = range ? Number(range[1]) : length != null ? (resumed ? have + length : length) : expectedTotal;
+      await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(partialPath, { flags: resumed ? "a" : "w" }));
+      const size = fs.statSync(partialPath).size;
+      if (expectedTotal != null && size < expectedTotal) throw new Error(`body ended early (${size} of ${expectedTotal} bytes)`);
+      fs.renameSync(partialPath, targetPath);
+      return targetPath;
+    } catch (err) {
+      const got = fs.existsSync(partialPath) ? fs.statSync(partialPath).size : 0;
+      if (err.fatal || attempt >= MAX_ATTEMPTS) {
+        fs.rmSync(partialPath, { force: true });
+        throw new Error(`${err.message}${attempt > 1 ? ` (after ${attempt} attempts, ${(got / 1e6).toFixed(0)}MB received)` : ""}`);
+      }
+      console.log(`  connection dropped at ${(got / 1e6).toFixed(0)}MB${expectedTotal ? ` of ${(expectedTotal / 1e6).toFixed(0)}MB` : ""} (${err.message}) -- resuming, attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
+      await new Promise((r) => setTimeout(r, 5000 * attempt));
+    }
   }
-  return targetPath;
 }
 
 async function launchBrowser(config) {
