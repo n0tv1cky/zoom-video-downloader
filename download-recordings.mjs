@@ -982,6 +982,28 @@ async function main() {
     }
   }
 
+  // sheet label minus derived number, per class, compared in date order per course
+  const labelGap = (p) => {
+    const sheet = parseInt(String(p.session.sheetSessionNumber ?? ""), 10);
+    const derived = parseInt(String(p.session.sessionNumber ?? ""), 10);
+    return Number.isNaN(sheet) || Number.isNaN(derived) ? null : sheet - derived;
+  };
+  const previousInCourse = new Map();
+  const byDate = plan
+    .filter((p) => p.session.codeResolved)
+    .sort((a, b) => formatDate(a.session.date).localeCompare(formatDate(b.session.date)) || startMinutes(sessionStartTime(a.session)) - startMinutes(sessionStartTime(b.session)));
+  const lastSeen = new Map();
+  for (const p of byDate) {
+    previousInCourse.set(p, lastSeen.get(p.session.subjectCode) ?? null);
+    lastSeen.set(p.session.subjectCode, p);
+  }
+  const labelGapChanged = (p) => {
+    const gap = labelGap(p);
+    if (gap === null) return true;
+    const prev = previousInCourse.get(p);
+    return (prev ? labelGap(prev) : 0) !== gap;
+  };
+
   for (const p of plan) {
     if (!p.session.codeResolved) continue; // HOLD line below covers it, every run
     const known = config.courseFaculty?.[p.session.subjectCode];
@@ -996,8 +1018,14 @@ async function main() {
     // that disagrees is worth one look -- it usually means a sheet typo, but
     // it can also mean a class was held that has no recording, which belongs
     // in config.json's heldWithoutRecording.
+    // Only a *change* in how far the sheet is off is news: one skipped
+    // label (24, on 10-12) leaves every later DSM 101 label 1 high, and
+    // re-flagging that on each new class (it did, 2026-10-17) is noise. So
+    // compare this class's sheet-minus-derived gap with the previous class
+    // of the same course, and flag only when it differs (or the sheet gives
+    // no number at all).
     const since = config.heldWithoutRecording?.labelCheckSince;
-    if (p.session.sheetSessionNumber !== p.session.sessionNumber && (!since || formatDate(p.session.date) >= since)) {
+    if (labelGapChanged(p) && (!since || formatDate(p.session.date) >= since)) {
       warnOnce(
         p,
         "sheet session number differs",
