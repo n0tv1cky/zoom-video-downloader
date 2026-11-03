@@ -64,6 +64,7 @@
   "driveUpload": {
     "enabled": true,
     "rootFolderId": "<YOUR_DRIVE_ROOT_FOLDER_ID>",
+    "tokenFile": "~/.zoom-recordings-sync/personal-drive-token.json",
     "organizeByCourse": true,
     "deleteLocalAfterUpload": true
   },

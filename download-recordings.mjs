@@ -109,6 +109,12 @@ function loadConfig() {
   // everything else, no separate Drive-specific setting required.
   raw.driveUpload.termFolderName = raw.driveUpload.termFolderName || path.basename(raw.outputDir);
   raw.driveUpload.deleteLocalAfterUpload = raw.driveUpload.deleteLocalAfterUpload ?? false;
+  // Which Google account Drive work runs as. Drive bills a file's owner, not
+  // the folder it's in, so uploads have to be made as the account whose
+  // storage should pay (2026-11-03: the school account hit its quota; see
+  // auth-personal-drive.mjs). The recordings sheet is still read as
+  // googleOAuth.tokenFile's account, since that's who it's shared with.
+  raw.driveUpload.tokenFile = expandHome(raw.driveUpload.tokenFile || raw.googleOAuth.tokenFile);
   // Maps the recordings sheet's short subject abbreviations (e.g. "ME") to
   // the program's canonical "DSM <N>" course codes, from the schedule
   // sheet's course legend table. Keys are matched case-insensitively.
@@ -859,6 +865,10 @@ async function main() {
   console.log(`Fetching recordings sheet for "${config.term}"...`);
   const authClient = await getGoogleAuthClient(config.googleOAuth.clientSecretFile, config.googleOAuth.tokenFile);
   const rawRows = await fetchRecordingsSheet(authClient, config.recordingsSheet.id, config.recordingsSheet.gid);
+  const driveAuth = config.driveUpload.enabled ? loadSavedGoogleAuth(config.driveUpload.tokenFile) : null;
+  if (config.driveUpload.enabled && !driveAuth) {
+    throw new Error(`No Drive login at ${config.driveUpload.tokenFile} -- run: node auth-personal-drive.mjs`);
+  }
   const rows = parseRows(rawRows, config.columns);
   const sessions = deriveSessionNumbers(
     applyClassOverrides(rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)), config.sessionOverrides),
@@ -1043,7 +1053,7 @@ async function main() {
   // never delete. state upload.fileName/folder records what Drive holds, so
   // after the first check this costs no API calls until a name changes.
   if (config.driveUpload.enabled) {
-    const drive = google.drive({ version: "v3", auth: authClient });
+    const drive = google.drive({ version: "v3", auth: driveAuth });
     const folderNameCache = new Map();
     const folderName = async (id) => {
       if (!folderNameCache.has(id)) folderNameCache.set(id, (await drive.files.get({ fileId: id, fields: "name" })).data.name);
@@ -1150,7 +1160,7 @@ async function main() {
     return;
   }
 
-  const drive = config.driveUpload.enabled ? google.drive({ version: "v3", auth: authClient }) : null;
+  const drive = config.driveUpload.enabled ? google.drive({ version: "v3", auth: driveAuth }) : null;
   const termFolderId = config.driveUpload.enabled
     ? await findOrCreateDriveFolder(drive, config.driveUpload.rootFolderId, config.driveUpload.termFolderName)
     : null;

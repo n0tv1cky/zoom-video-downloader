@@ -48,6 +48,7 @@ function loadConfig() {
   raw.driveUpload.enabled = raw.driveUpload.enabled ?? false;
   raw.driveUpload.organizeByCourse = raw.driveUpload.organizeByCourse ?? true;
   raw.driveUpload.termFolderName = raw.driveUpload.termFolderName || path.basename(raw.outputDir ?? "");
+  raw.driveUpload.tokenFile = expandHome(raw.driveUpload.tokenFile || raw.googleOAuth.tokenFile);
   return raw;
 }
 
@@ -126,7 +127,7 @@ async function main() {
     return;
   }
 
-  const authClient = google.auth.fromJSON(JSON.parse(fs.readFileSync(config.googleOAuth.tokenFile, "utf8")));
+  const authClient = google.auth.fromJSON(JSON.parse(fs.readFileSync(config.driveUpload.tokenFile, "utf8")));
   const drive = google.drive({ version: "v3", auth: authClient });
   const termFolderId = config.driveUpload.rootFolderId
     ? await findOrCreateDriveFolder(drive, config.driveUpload.rootFolderId, config.driveUpload.termFolderName)

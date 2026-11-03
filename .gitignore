@@ -7,3 +7,4 @@ node_modules/
 # Secrets — never commit
 oauth-client.json
 config.local.json
+oauth-client-personal.json
