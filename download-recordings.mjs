@@ -708,10 +708,24 @@ async function grabClipUrls(page, shareLink, rl) {
     // instant the network goes idle -- wait for the <video> element itself.
     await page.waitForSelector("video", { timeout: 20_000 });
 
+    // Zoom sometimes assigns the signed src on load, with no interaction.
+    // In that case don't nudge: at the 1280px viewport one of the clicks below
+    // can navigate the tab away to zoom.us's home page (seen live 2026-11-16,
+    // DSM-101-36), after which no video ever appears.
+    const hasSrcAlready = await page
+      .waitForFunction(
+        () => {
+          const v = document.querySelector("video");
+          return (v?.currentSrc || v?.src || "").startsWith("http");
+        },
+        { timeout: 3_000 }
+      )
+      .then(() => true, () => false);
+
     // Nudge playback every way that might work: Zoom only assigns the real
     // signed src in response to something resembling a genuine interaction,
     // and its Play control's exact markup isn't guaranteed, so try several.
-    await page.evaluate(() => {
+    if (!hasSrcAlready) await page.evaluate(() => {
       const playable = Array.from(document.querySelectorAll('button, [role="button"]')).find(
         (el) => (el.getAttribute("aria-label") || el.textContent || "").trim().toLowerCase() === "play"
       );
