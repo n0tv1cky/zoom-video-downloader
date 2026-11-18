@@ -90,12 +90,10 @@
   },
 
   "heldWithoutRecording": {
-    "note": "Session numbers are derived, never typed: a class is identified by course + date + start time, and session N is the Nth class of that course actually held, in date/time order -- the rule shared with projects/attendance and projects/msdsm-notes (2026-10-14). Held isn't the same as recorded, so classes that met but have no recording in the recordings sheet go here to keep their place in the count. DSM 102 2026-09-08: on the timetable as DSM 102 (8), no recording listed, and both the sheet and the timetable number the 09-11 class as 9. A class listed here that the sheet ALSO lists on a shared link is dropped from the recording list (that link's recording does not contain it) -- 2026-11-11 DSM 101 and 2026-11-13 DSM 102 shared the DSM 109 link; the recordings of those two classes are missing. labelCheckSince: from this date, a sheet label that disagrees with the derived number is flagged once (earlier mislabels are already known).",
+    "note": "Session numbers are derived, never typed: a class is identified by course + date + start time, and session N is the Nth class of that course actually held, in date/time order -- the rule shared with projects/attendance and projects/msdsm-notes (2026-10-14). Held isn't the same as recorded, so classes that met but have no recording in the recordings sheet go here to keep their place in the count. DSM 102 2026-09-08: on the timetable as DSM 102 (8), no recording listed, and both the sheet and the timetable number the 09-11 class as 9. labelCheckSince: from this date, a sheet label that disagrees with the derived number is flagged once (earlier mislabels are already known).",
     "labelCheckSince": "2026-10-14",
     "classes": [
-      { "course": "DSM 102", "date": "2026-09-08", "start": "7:00pm" },
-      { "course": "DSM 101", "date": "2026-11-11", "start": "7:00pm" },
-      { "course": "DSM 102", "date": "2026-11-13", "start": "7:00pm" }
+      { "course": "DSM 102", "date": "2026-09-08", "start": "7:00pm" }
     ]
   },
 
