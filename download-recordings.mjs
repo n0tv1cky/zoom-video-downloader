@@ -717,7 +717,7 @@ async function startPlaybackIfNeeded(page) {
   });
 }
 
-async function grabClipUrls(page, shareLink, rl) {
+async function grabClipUrls(page, shareLink, rl, expectedClips = 1) {
   let totalClips = 1;
   // Zoom's newer share page lists each stop/restart of the recording as a
   // separate "Recording N" file (2.0 .../files -> result.segments), and the
@@ -757,6 +757,19 @@ async function grabClipUrls(page, shareLink, rl) {
 
     // Each recording file opens directly via the share link + its
     // startTime, the same link the page's own "Copy link" gives.
+    // Mapped by position, so the count must match the classes the row lists:
+    // a stray few-second file (seen: DSM-106 S10) would otherwise be filed as
+    // a class. A single-class row with several files (stopped and restarted
+    // mid-class) keeps only the first -- flag it.
+    if (segments?.length > 1 && expectedClips > 1 && segments.length !== expectedClips) {
+      throw new Error(
+        `share page lists ${segments.length} recording files but the sheet row lists ${expectedClips} classes -- not guessing which file is which; check the link by hand (a sessionOverrides "clip" entry can map them)`
+      );
+    }
+    if (segments?.length > 1 && expectedClips === 1) {
+      console.log(`WARN  share page lists ${segments.length} recording files for a one-class row -- downloading only Recording 1; check the link by hand`);
+      return clips;
+    }
     if (segments?.length > 1) {
       for (const seg of segments.slice(1)) {
         const url = new URL(shareLink);
@@ -1438,7 +1451,7 @@ async function main() {
 
       let clips;
       try {
-        clips = await grabClipUrls(page, link, rl);
+        clips = await grabClipUrls(page, link, rl, (sessionsByLink.get(link) ?? group.map((p) => p.session)).length);
       } catch (err) {
         for (const p of group) recordFailure(p, "download", err);
         continue;
