@@ -83,17 +83,20 @@
   },
 
   "sessionOverrides": {
-    "note": "Hand-confirmed corrections to recordings-sheet rows other than the session number (which is derived, see heldWithoutRecording), keyed \"<date> <row start time> <DSM code>\". Currently only faculty: the 09-02/09-04 rows had instructors crossed between courses; these were hand-corrected on Drive and are recorded here so the sync keeps them.",
+    "note": "Hand-confirmed corrections to recordings-sheet rows other than the session number (which is derived, see heldWithoutRecording), keyed \"<date> <row start time> <DSM code>\". Fields: faculty, and clip (1-based recording file on a shared link, for a row that lists its classes in a different order than Zoom recorded them). The 09-02/09-04 rows had instructors crossed between courses; these were hand-corrected on Drive and are recorded here so the sync keeps them. 2026-11-17 'DSM 101/DSM 103': Recording 1 is Dr. Surya Prakash's DSM 103 class (6:51pm), Recording 2 is Prof. Ruchi Sharma's DSM 101 (8:17pm), confirmed from Zoom's transcripts, attendance and by hand.",
     "2026-09-02 7:00pm DSM 101": { "faculty": "Suman Majumdar" },
     "2026-09-02 7:00pm DSM 107": { "faculty": "Karthikeya Naraparaju" },
-    "2026-09-04 7:00pm DSM 106": { "faculty": "Jagannathan Srinath" }
+    "2026-09-04 7:00pm DSM 106": { "faculty": "Jagannathan Srinath" },
+    "2026-11-17 7:00pm DSM 101": { "faculty": "Ruchi Sharma", "clip": 2 },
+    "2026-11-17 7:00pm DSM 103": { "faculty": "Surya Prakash", "clip": 1 }
   },
 
   "heldWithoutRecording": {
-    "note": "Session numbers are derived, never typed: a class is identified by course + date + start time, and session N is the Nth class of that course actually held, in date/time order -- the rule shared with projects/attendance and projects/msdsm-notes (2026-10-14). Held isn't the same as recorded, so classes that met but have no recording in the recordings sheet go here to keep their place in the count. DSM 102 2026-09-08: on the timetable as DSM 102 (8), no recording listed, and both the sheet and the timetable number the 09-11 class as 9. labelCheckSince: from this date, a sheet label that disagrees with the derived number is flagged once (earlier mislabels are already known).",
+    "note": "Session numbers are derived, never typed: a class is identified by course + date + start time, and session N is the Nth class of that course actually held, in date/time order -- the rule shared with projects/attendance and projects/msdsm-notes (2026-10-14). Held isn't the same as recorded, so classes that met but have no recording in the recordings sheet go here to keep their place in the count. DSM 102 2026-09-08: on the timetable as DSM 102 (8), no recording listed, and both the sheet and the timetable number the 09-11 class as 9. DSM 102 2026-10-17 12:00pm: on the timetable as DSM 102 (15), attendance captured it live, no recording listed (confirmed by hand 2026-11-18). labelCheckSince: from this date, a sheet label that disagrees with the derived number is flagged once (earlier mislabels are already known).",
     "labelCheckSince": "2026-10-14",
     "classes": [
-      { "course": "DSM 102", "date": "2026-09-08", "start": "7:00pm" }
+      { "course": "DSM 102", "date": "2026-09-08", "start": "7:00pm" },
+      { "course": "DSM 102", "date": "2026-10-17", "start": "12:00pm" }
     ]
   },
 

@@ -614,7 +614,10 @@ function applyClassOverrides(sessions, overrides = {}) {
     const o = s.codeResolved ? overrides[classKey(s)] : null;
     if (!o || typeof o !== "object") return s;
     used.add(classKey(s));
-    return { ...s, faculty: o.faculty ?? s.faculty };
+    // `clip`: 1-based recording file on the shared link, for a row that
+    // lists its classes in a different order than Zoom recorded them.
+    const clipIndex = Number.isInteger(o.clip) && s.expectedClips > 1 ? o.clip - 1 : s.clipIndex;
+    return { ...s, faculty: o.faculty ?? s.faculty, clipIndex, stateKey: s.expectedClips > 1 ? `${s.link}#clip${clipIndex}` : s.stateKey };
   });
   for (const key of Object.keys(overrides)) {
     if (key !== "note" && !used.has(key)) console.log(`NOTE  sessionOverrides entry "${key}" matched no session in the sheet`);
@@ -685,13 +688,54 @@ async function waitForVideoSrc(page, excludeSrc) {
 // video src) -- the same thing a "forward" control in the UI triggers. We
 // replicate that by seeking each clip to ~its end and letting it play the
 // last moment out, rather than needing to find/click that control directly.
+// Zoom sometimes assigns the signed src on load, with no interaction.
+// In that case don't nudge: at the 1280px viewport one of the clicks below
+// can navigate the tab away to zoom.us's home page (seen live 2026-11-16,
+// DSM-101-36), after which no video ever appears.
+async function startPlaybackIfNeeded(page) {
+  const hasSrcAlready = await page
+    .waitForFunction(
+      () => {
+        const v = document.querySelector("video");
+        return (v?.currentSrc || v?.src || "").startsWith("http");
+      },
+      { timeout: 3_000 }
+    )
+    .then(() => true, () => false);
+
+  // Nudge playback every way that might work: Zoom only assigns the real
+  // signed src in response to something resembling a genuine interaction,
+  // and its Play control's exact markup isn't guaranteed, so try several.
+  if (!hasSrcAlready) await page.evaluate(() => {
+    const playable = Array.from(document.querySelectorAll('button, [role="button"]')).find(
+      (el) => (el.getAttribute("aria-label") || el.textContent || "").trim().toLowerCase() === "play"
+    );
+    playable?.click();
+    const v = document.querySelector("video");
+    v?.click?.();
+    v?.play?.().catch(() => {});
+  });
+}
+
 async function grabClipUrls(page, shareLink, rl) {
   let totalClips = 1;
+  // Zoom's newer share page lists each stop/restart of the recording as a
+  // separate "Recording N" file (2.0 .../files -> result.segments), and the
+  // old 1.0 play/info totalClips no longer fires. Without this, every
+  // two-class link looked like one clip: only Recording 1 was downloaded and
+  // the continuous-recording splitter cut that single class in two (live
+  // 2026-11-11..17: the MP classes, Recording 2, were never fetched).
+  let segments = null;
   const onResponse = async (res) => {
-    if (!res.url().includes("/nws/recording/1.0/play/info")) return;
+    const url = res.url().split("?")[0];
     try {
-      const json = await res.json();
-      if (json?.result?.totalClips) totalClips = json.result.totalClips;
+      if (url.includes("/nws/recording/1.0/play/info")) {
+        const json = await res.json();
+        if (json?.result?.totalClips) totalClips = json.result.totalClips;
+      } else if (!segments && /\/nws\/recording\/2\.0\/share\/[^/]+\/files$/.test(url)) {
+        const json = await res.json();
+        if (Array.isArray(json?.result?.segments)) segments = json.result.segments;
+      }
     } catch {}
   };
   page.on("response", onResponse);
@@ -707,35 +751,23 @@ async function grabClipUrls(page, shareLink, rl) {
     // The player is a JS-rendered SPA region, not necessarily present the
     // instant the network goes idle -- wait for the <video> element itself.
     await page.waitForSelector("video", { timeout: 20_000 });
-
-    // Zoom sometimes assigns the signed src on load, with no interaction.
-    // In that case don't nudge: at the 1280px viewport one of the clicks below
-    // can navigate the tab away to zoom.us's home page (seen live 2026-11-16,
-    // DSM-101-36), after which no video ever appears.
-    const hasSrcAlready = await page
-      .waitForFunction(
-        () => {
-          const v = document.querySelector("video");
-          return (v?.currentSrc || v?.src || "").startsWith("http");
-        },
-        { timeout: 3_000 }
-      )
-      .then(() => true, () => false);
-
-    // Nudge playback every way that might work: Zoom only assigns the real
-    // signed src in response to something resembling a genuine interaction,
-    // and its Play control's exact markup isn't guaranteed, so try several.
-    if (!hasSrcAlready) await page.evaluate(() => {
-      const playable = Array.from(document.querySelectorAll('button, [role="button"]')).find(
-        (el) => (el.getAttribute("aria-label") || el.textContent || "").trim().toLowerCase() === "play"
-      );
-      playable?.click();
-      const v = document.querySelector("video");
-      v?.click?.();
-      v?.play?.().catch(() => {});
-    });
+    await startPlaybackIfNeeded(page);
 
     const clips = [await waitForVideoSrc(page)];
+
+    // Each recording file opens directly via the share link + its
+    // startTime, the same link the page's own "Copy link" gives.
+    if (segments?.length > 1) {
+      for (const seg of segments.slice(1)) {
+        const url = new URL(shareLink);
+        url.searchParams.set("startTime", String(seg.startTimeMs));
+        await page.goto(url.toString(), { waitUntil: "networkidle2", timeout: 60_000 });
+        await page.waitForSelector("video", { timeout: 20_000 });
+        await startPlaybackIfNeeded(page);
+        clips.push(await waitForVideoSrc(page, clips[clips.length - 1]));
+      }
+      return clips;
+    }
 
     for (let i = 1; i < totalClips; i++) {
       await page.waitForFunction(() => !isNaN(document.querySelector("video")?.duration), { timeout: 20_000 });
@@ -1255,6 +1287,15 @@ async function main() {
     let durationSec, cutPoints;
     try {
       durationSec = probeDurationSeconds(rawPath);
+      // A clip too short to hold all its classes is not a continuous
+      // recording -- it's one class, with the others in recording files
+      // Zoom didn't report. Splitting it would file half a class under each
+      // session (live 2026-11-11..17), so refuse loudly instead.
+      if (durationSec < plans.length * 45 * 60) {
+        throw new Error(
+          `only clip found is ${(durationSec / 60).toFixed(0)} min -- too short to hold ${plans.length} classes, so not splitting it. The other class(es) are probably separate recording files on the share page; check the link by hand.`
+        );
+      }
       const sessionDurationsMin = resolveSessionDurationsMinutes(plans[0].session, plans.length, config.timeSlots) ?? plans.map(() => 1);
       const silenceGaps = detectSilenceGaps(rawPath);
       cutPoints = pickCutPoints({ durationSec, sessionDurationsMin, silenceGaps, windowMin: 10 });
