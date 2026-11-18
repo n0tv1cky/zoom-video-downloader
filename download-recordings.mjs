@@ -622,6 +622,32 @@ function applyClassOverrides(sessions, overrides = {}) {
   return result;
 }
 
+// A class listed in config.json's heldWithoutRecording that the sheet ALSO
+// lists (sharing a link with another class) was held, but that link's
+// recording doesn't contain it -- 2026-11-11 DSM 101 and 2026-11-13 DSM 102
+// shared the DSM 109 recording's link, which holds only the DSM 109 class
+// (confirmed from the transcripts), so the continuous-recording splitter had
+// cut one class into two. Drop those sessions from the recording list (the
+// heldWithoutRecording entry keeps their place in the numbering) and
+// re-index what is left on the link as if the row had never listed them.
+function dropUnrecordedClasses(sessions, held = []) {
+  if (!held.length) return sessions;
+  const heldKeys = new Set(held.map((h) => `${h.date} ${String(h.start).trim().toLowerCase()} ${h.course}`));
+  const dropped = sessions.filter((s) => s.codeResolved && heldKeys.has(classKey(s)));
+  if (!dropped.length) return sessions;
+  const affectedLinks = new Set(dropped.map((s) => s.link));
+  for (const d of dropped) console.log(`NOTE  ${classKey(d)}: held but not in the recording its sheet row links to -- no recording expected`);
+  const kept = sessions.filter((s) => !dropped.includes(s));
+  const perLink = new Map();
+  for (const s of kept) if (affectedLinks.has(s.link)) perLink.set(s.link, [...(perLink.get(s.link) ?? []), s]);
+  const reindexed = new Map();
+  for (const [link, group] of perLink) {
+    group.sort((a, b) => a.clipIndex - b.clipIndex);
+    group.forEach((s, i) => reindexed.set(s, { ...s, clipIndex: i, expectedClips: group.length, stateKey: group.length > 1 ? `${link}#clip${i}` : link }));
+  }
+  return kept.map((s) => reindexed.get(s) ?? s);
+}
+
 function deriveSessionNumbers(sessions, heldWithoutRecording = []) {
   const entries = [
     ...sessions.filter((s) => s.codeResolved).map((s, i) => ({ s, i })),
@@ -885,7 +911,10 @@ async function main() {
   }
   const rows = parseRows(rawRows, config.columns);
   const sessions = deriveSessionNumbers(
-    applyClassOverrides(rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)), config.sessionOverrides),
+    dropUnrecordedClasses(
+      applyClassOverrides(rows.flatMap((row) => expandRowIntoSessions(row, config.subjectCodeMap)), config.sessionOverrides),
+      config.heldWithoutRecording?.classes
+    ),
     config.heldWithoutRecording?.classes
   );
   console.log(
