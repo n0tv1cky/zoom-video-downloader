@@ -311,8 +311,24 @@ function buildFileName(template, row) {
     template
       .replace("{courseCode}", slug(row.courseCode))
       .replace("{date}", formatDate(row.date))
-      .replace("{faculty}", slug(row.faculty)) + (template.endsWith(".mp4") ? "" : ".mp4")
+      .replace("{faculty}", facultySlug(row.faculty)) + (template.endsWith(".mp4") ? "" : ".mp4")
   ).replace(/\.mp4\.mp4$/, ".mp4");
+}
+
+// The sheet's Faculty cells carry stray formatting that slug() alone let
+// through into file names: a leading space before "Prof." (so the title
+// wasn't stripped -- "Prof-Pritee-Sharma"), titles on every name in a
+// multi-name cell, and lowercase names ("somnath Dey"). Strip the title off
+// each name and capitalise each word, so the same professor always gets the
+// same file-name spelling.
+function facultySlug(text) {
+  return slug(
+    String(text ?? "")
+      .split(/\s*[,/&]\s*/)
+      .map((name) => name.trim().replace(/^(prof|dr|mr|ms|mrs)(\.\s*|\s+)/i, "").replace(/(^|\s)([a-z])/g, (_, sp, c) => sp + c.toUpperCase()))
+      .filter(Boolean)
+      .join(" ")
+  );
 }
 
 // The recordings sheet's "Course Code with Session No." column uses each
