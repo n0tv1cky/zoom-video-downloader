@@ -632,8 +632,9 @@ function applyClassOverrides(sessions, overrides = {}) {
     used.add(classKey(s));
     // `clip`: 1-based recording file on the shared link, for a row that
     // lists its classes in a different order than Zoom recorded them.
-    const clipIndex = Number.isInteger(o.clip) && s.expectedClips > 1 ? o.clip - 1 : s.clipIndex;
-    return { ...s, faculty: o.faculty ?? s.faculty, clipIndex, stateKey: s.expectedClips > 1 ? `${s.link}#clip${clipIndex}` : s.stateKey };
+    const clipConfirmed = Number.isInteger(o.clip) && s.expectedClips > 1;
+    const clipIndex = clipConfirmed ? o.clip - 1 : s.clipIndex;
+    return { ...s, faculty: o.faculty ?? s.faculty, clipIndex, clipConfirmed, stateKey: s.expectedClips > 1 ? `${s.link}#clip${clipIndex}` : s.stateKey };
   });
   for (const key of Object.keys(overrides)) {
     if (key !== "note" && !used.has(key)) console.log(`NOTE  sessionOverrides entry "${key}" matched no session in the sheet`);
@@ -733,7 +734,7 @@ async function startPlaybackIfNeeded(page) {
   });
 }
 
-async function grabClipUrls(page, shareLink, rl, expectedClips = 1) {
+async function grabClipUrls(page, shareLink, rl, expectedClips = 1, clipsConfirmed = false) {
   let totalClips = 1;
   // Zoom's newer share page lists each stop/restart of the recording as a
   // separate "Recording N" file (2.0 .../files -> result.segments), and the
@@ -776,8 +777,11 @@ async function grabClipUrls(page, shareLink, rl, expectedClips = 1) {
     // Mapped by position, so the count must match the classes the row lists:
     // a stray few-second file (seen: DSM-106 S10) would otherwise be filed as
     // a class. A single-class row with several files (stopped and restarted
-    // mid-class) keeps only the first -- flag it.
-    if (segments?.length > 1 && expectedClips > 1 && segments.length !== expectedClips) {
+    // mid-class) keeps only the first -- flag it. When every class on the
+    // link has a hand-confirmed sessionOverrides "clip", the mapping is
+    // known, so fetch every file and let each class pick its own (DSM-106
+    // S10, 2026-11-02: Recording 2 is a 9-second stray, the class is 3).
+    if (segments?.length > 1 && expectedClips > 1 && segments.length !== expectedClips && !clipsConfirmed) {
       throw new Error(
         `share page lists ${segments.length} recording files but the sheet row lists ${expectedClips} classes -- not guessing which file is which; check the link by hand (a sessionOverrides "clip" entry can map them)`
       );
@@ -1467,7 +1471,8 @@ async function main() {
 
       let clips;
       try {
-        clips = await grabClipUrls(page, link, rl, (sessionsByLink.get(link) ?? group.map((p) => p.session)).length);
+        const linkSessions = sessionsByLink.get(link) ?? group.map((p) => p.session);
+        clips = await grabClipUrls(page, link, rl, linkSessions.length, linkSessions.every((s) => s.clipConfirmed));
       } catch (err) {
         for (const p of group) recordFailure(p, "download", err);
         continue;

@@ -83,13 +83,17 @@
   },
 
   "sessionOverrides": {
-    "note": "Hand-confirmed corrections to recordings-sheet rows other than the session number (which is derived, see heldWithoutRecording), keyed \"<date> <row start time> <DSM code>\". Fields: faculty, and clip (1-based recording file on a shared link, for a row that lists its classes in a different order than Zoom recorded them). The 09-02/09-04 rows had instructors crossed between courses; these were hand-corrected on Drive and are recorded here so the sync keeps them. 2026-11-17 'DSM 101/DSM 103': Recording 1 is Dr. Surya Prakash's DSM 103 class (6:51pm), Recording 2 is Prof. Ruchi Sharma's DSM 101 (8:17pm), confirmed from Zoom's transcripts, attendance and by hand.",
+    "note": "Hand-confirmed corrections to recordings-sheet rows other than the session number (which is derived, see heldWithoutRecording), keyed \"<date> <row start time> <DSM code>\". Fields: faculty, and clip (1-based recording file on a shared link, for a row that lists its classes in a different order than Zoom recorded them). The 09-02/09-04 rows had instructors crossed between courses; these were hand-corrected on Drive and are recorded here so the sync keeps them. 2026-11-17 'DSM 101/DSM 103': Recording 1 is Dr. Surya Prakash's DSM 103 class (6:51pm), Recording 2 is Prof. Ruchi Sharma's DSM 101 (8:17pm), confirmed from Zoom's transcripts, attendance and by hand. 2026-11-02 'DSM 102 (20)/BR 10': the share link holds 3 files -- Recording 1 (50 min) is DSM 102, Recording 2 is a 9-second stray, Recording 3 (64 min) is BR 10; confirmed from the share page when the link was extended (2026-11-20). 2026-11-19 'DSM 101/DSM 103': one continuous recording, Somnath Dey's DSM 103 first (binary search) then Ruchi Sharma's DSM 101 (regression); the sheet lists the codes in the opposite order. Confirmed from the audio and by hand (2026-11-20).",
     "2026-09-02 7:00pm DSM 101": { "faculty": "Suman Majumdar" },
     "2026-09-02 7:00pm DSM 107": { "faculty": "Karthikeya Naraparaju" },
     "2026-09-04 7:00pm DSM 106": { "faculty": "Jagannathan Srinath" },
     "2026-10-31 2:45 pm DSM 101": { "faculty": "Ruchi Sharma" },
     "2026-11-17 7:00pm DSM 101": { "faculty": "Ruchi Sharma", "clip": 2 },
-    "2026-11-17 7:00pm DSM 103": { "faculty": "Surya Prakash", "clip": 1 }
+    "2026-11-17 7:00pm DSM 103": { "faculty": "Surya Prakash", "clip": 1 },
+    "2026-11-02 7:00pm DSM 102": { "clip": 1 },
+    "2026-11-02 7:00pm DSM 106": { "clip": 3 },
+    "2026-11-19 7:00pm DSM 101": { "faculty": "Ruchi Sharma", "clip": 2 },
+    "2026-11-19 7:00pm DSM 103": { "faculty": "Somnath Dey", "clip": 1 }
   },
 
   "heldWithoutRecording": {
