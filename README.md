@@ -29,6 +29,56 @@ recordings/
 - **Scheduled runs on macOS (optional),** with an emailed report and a
   same-day retry.
 
+## How the download works
+
+```mermaid
+flowchart TD
+    sheet[("Google Sheet<br/>recording links")]
+    state[("State file<br/>what's already done")]
+    zoom["Zoom share page"]
+    disk[("Local folder<br/>DSM-101/…mp4")]
+    drive[("Google Drive<br/>per-course folders")]
+
+    subgraph script["download-recordings.mjs"]
+        read["1 · Read rows<br/>Sheets API, your Google login"]
+        plan["2 · Work out each class<br/>course code, session no., faculty, file name"]
+        pending{"Already<br/>done?"}
+        chrome["3 · Headless Chrome<br/>dedicated profile, signed in to Zoom"]
+        fetch["4 · Download in Node<br/>reuses the page's cookies → .partial → .mp4"]
+        split["Split at the silence<br/>only if one file holds two classes · ffmpeg"]
+        upload["5 · Upload<br/>Drive API, optional"]
+    end
+
+    sheet --> read --> plan --> pending
+    state -.-> pending
+    pending -- yes --> skip(["skip"])
+    pending -- no --> chrome
+    chrome -- "open link, press Play" --> zoom
+    zoom -- "signed video URL<br/>one per recording file" --> chrome
+    chrome --> fetch --> disk
+    fetch -.-> split -.-> disk
+    disk --> upload --> drive
+    fetch --> state
+    upload --> state
+```
+
+1. **Read the sheet.** Rows are read with the Google Sheets API. No browser is
+   needed for this.
+2. **Plan each class.** Each row becomes one or more classes, each with its
+   final file name. Classes the state file marks as done are skipped, and a
+   run with nothing new never opens a browser.
+3. **Get the video link.** A headless Chrome, with its own profile that's
+   signed in to Zoom, opens the share link and presses Play. It then reads the
+   signed video URL the player loads. That's why no Download button is needed.
+4. **Download.** Node downloads that URL with the page's cookies into a
+   `.partial` file and renames it when it's complete. If one recording holds
+   two classes, ffmpeg splits it at the silence between them.
+5. **Upload (optional).** The file goes to your Drive folder. Each step is
+   recorded in the state file, so a re-run carries on where the last one
+   stopped.
+
+More detail is in [docs/how-it-works.md](docs/how-it-works.md).
+
 ## Quick start
 
 ```bash
