@@ -4,8 +4,8 @@
 # DEPLOYED COPY: launchd actually executes ~/.zoom-recordings-sync/daily-check.sh,
 # not this file. macOS TCC blocks background (non-GUI) processes from executing
 # scripts that live inside ~/Documents, so the runtime copy lives outside it.
-# Re-run this after editing this file:
-#   cp scripts/zoom-recordings/daily-check.sh ~/.zoom-recordings-sync/daily-check.sh
+# Re-deploy after editing this file (it also points the copy at your clone):
+#   ./install-launchd.sh
 #
 # THIS USED TO SHELL OUT TO `claude -p` TO SUMMARIZE THE LOG AND SEND AN
 # iMESSAGE. Both are gone. Two independent reasons:

@@ -15,7 +15,7 @@ row like `DSM 101 (5)/DSM 102 (2)` sharing a single Zoom share link because
 the presenter stopped and restarted the recording between the two classes,
 producing two separate clips inside Zoom's own multi-clip player.
 `expandRowIntoSessions` + `grabClipUrls` handle exactly that (see
-`docs/course-codes.md` and `README.md` for the existing mechanism).
+[how-it-works.md](how-it-works.md) for the existing mechanism).
 
 **This plan covers the other shape**: nobody stopped the recording at all,
 so Zoom produced one continuous clip covering both sessions back-to-back
@@ -138,8 +138,8 @@ node confirm-split.mjs <stateKey> --at 62:30
 
 ## Config: `timeSlots`
 
-Add a `timeSlots` block to `scripts/zoom-recordings/config.json`, matching
-the shape already used by `scripts/calendar-sync` and `scripts/attendance`
+Add a `timeSlots` block to `config.json`, matching
+the shape already used by the sibling calendar-sync project and the sibling attendance project
 (duplicated deliberately, not shared — see `docs/course-codes.md`'s
 "hand-duplicated... update the others too" note, which already documents
 this exact tradeoff for `subjectCodeMap` and applies the same way here):

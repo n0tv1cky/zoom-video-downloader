@@ -4,7 +4,7 @@
 # DEPLOYED COPY: like daily-check.sh, launchd runs the copy at
 # ~/.zoom-recordings-sync/retry-if-needed.sh (TCC blocks background processes
 # from executing scripts under ~/Documents). Re-run after editing this file:
-#   cp scripts/zoom-recordings/retry-if-needed.sh ~/.zoom-recordings-sync/retry-if-needed.sh
+#   cp retry-if-needed.sh ~/.zoom-recordings-sync/retry-if-needed.sh
 #
 # Its own launchd job (com.n0tv1cky.zoom-recordings-retry.plist) fires this on
 # a StartInterval timer. There's no clean "on wake" launchd event, but a

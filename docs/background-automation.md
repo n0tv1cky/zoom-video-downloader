@@ -1,11 +1,11 @@
 # Running a background job reliably on a MacBook (launchd, lid-closed, TCC)
 
-Distilled from building `scripts/calendar-sync`'s scheduled sync + its
+Distilled from building the sibling calendar-sync project's scheduled sync + its
 lid-closed wake workaround, including three real failures hit and fixed
 along the way. Written down so any future script here that needs to run
 unattended on a schedule — not just calendar-sync — can reuse the pattern
 and skip re-discovering the same bugs. Reusable code:
-`scripts/calendar-sync/install-launchd.sh` (the normal per-user scheduled
+calendar-sync's `install-launchd.sh` (the normal per-user scheduled
 job) and `schedule-wakeups.sh` + `install-wake-scheduler.sh` (the
 lid-closed workaround) — copy and adapt.
 
@@ -109,7 +109,7 @@ about this worth knowing before reaching for it:
    else to re-queue the next day's full set once the current ones are
    consumed. `schedule-wakeups.sh` does the queuing (computing the
    remaining times for *today* from a configurable window +
-   interval — see `scripts/calendar-sync/config.json`'s `sync` block for
+   interval — see calendar-sync's `config.json`'s `sync` block for
    the shape); the `com.n0tv1cky.calendar-sync-wake-scheduler`
    LaunchDaemon runs it once nightly (00:05, well before any reasonable
    active-hours start) to refresh the set for the new day.

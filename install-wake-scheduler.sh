@@ -28,7 +28,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-REPO_DIR="/Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEPLOY_DIR="/Users/n0tv1cky/.zoom-recordings-sync"
 PLIST_LABEL="com.n0tv1cky.zoom-recordings-wake-scheduler"
 PLIST_PATH="/Library/LaunchDaemons/${PLIST_LABEL}.plist"

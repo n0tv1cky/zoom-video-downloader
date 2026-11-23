@@ -33,13 +33,16 @@
 
 set -euo pipefail
 
-REPO_DIR="/Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings"
+# This clone's location (the script lives at the repo root).
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEPLOY_DIR="$HOME/.zoom-recordings-sync"
 PLIST_LABEL="com.n0tv1cky.zoom-recordings-sync"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
 mkdir -p "$DEPLOY_DIR"
-cp "$REPO_DIR/daily-check.sh" "$DEPLOY_DIR/daily-check.sh"
+# daily-check.sh is written with the original author's repo path; the
+# deployed copy is pointed at this clone instead (a no-op on that machine).
+sed "s#/Users/n0tv1cky/Documents/Personal/masters/projects/zoom-recordings#${REPO_DIR}#g" "$REPO_DIR/daily-check.sh" > "$DEPLOY_DIR/daily-check.sh"
 chmod +x "$DEPLOY_DIR/daily-check.sh"
 
 # Emits the <dict>Hour/Minute</dict> entries for every step from

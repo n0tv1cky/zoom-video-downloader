@@ -6,5 +6,11 @@ node_modules/
 
 # Secrets — never commit
 oauth-client.json
-config.local.json
 oauth-client-personal.json
+config.local.json
+.env
+
+# Downloads and scratch files
+recordings/
+*.partial
+tmp-*

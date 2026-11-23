@@ -1,0 +1,15 @@
+{
+  "recordingsSheet": {
+    "id": "PASTE_SHEET_ID_FROM_ITS_URL",
+    "gid": "0"
+  },
+  "outputDir": "./recordings",
+  "driveUpload": {
+    "enabled": false,
+    "rootFolderId": "PASTE_DRIVE_FOLDER_ID_FROM_ITS_URL",
+    "tokenFile": "~/.zoom-recordings-sync/google-oauth-token.json"
+  },
+  "notifications": {
+    "toEmail": "you@example.com"
+  }
+}

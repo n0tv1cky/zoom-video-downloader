@@ -1,10 +1,10 @@
 # Sending notification emails from a script (Gmail API)
 
-Distilled from building `scripts/calendar-sync`'s change-notification email,
+Distilled from building the sibling calendar-sync project's change-notification email,
 including several real failures hit and fixed along the way. Written down so
 any future script here that needs to notify a human by email (not just
 calendar-sync) can reuse the pattern and skip re-discovering the same bugs.
-Reusable code: `scripts/calendar-sync/lib/googleAuth.mjs` (auth) and
+Reusable code: calendar-sync's `lib/googleAuth.mjs` (auth) and
 `lib/notify.mjs` (compose + send) — copy and adapt rather than reinventing.
 
 ## Why Gmail API, not Calendar's built-in guest notifications
@@ -68,7 +68,7 @@ but easy to forget when adding a *new* scope to *any* existing app:
    call needing the new scope 403s with `ACCESS_TOKEN_SCOPE_INSUFFICIENT`,
    even though the browser visibly shows a "successful" consent each time.
    `@google-cloud/local-auth` cannot be told to add `prompt: 'consent'` (no
-   such option), which is exactly why `scripts/calendar-sync/lib/
+   such option), which is exactly why calendar-sync's `lib/
    googleAuth.mjs` runs its own tiny local-server OAuth flow instead of that
    package — see that file's header comment for the full mechanics. Reuse
    that flow rather than `@google-cloud/local-auth` for any new script that
