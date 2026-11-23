@@ -32,13 +32,29 @@ own OAuth client:
    [Google Sheets API](https://console.cloud.google.com/apis/library/sheets.googleapis.com)
    and the
    [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com).
-3. **Set up the consent screen.** Under **APIs & Services → OAuth consent
-   screen**, choose **External** and fill in the required fields. Add your own
-   Google address under **Test users**.
-4. **Create the client.** Under **APIs & Services → Credentials → Create
-   credentials → OAuth client ID**, choose **Desktop app**.
+3. **Set up the consent screen.** Open **Google Auth Platform** (older
+   consoles call it **APIs & Services → OAuth consent screen**).
+   - **Branding:** enter an app name and your email.
+   - **Audience:** choose **External** and add your own Google address under
+     **Test users**.
+4. **Create the client.** Under **Clients → Create client** (older consoles:
+   **APIs & Services → Credentials → Create credentials → OAuth client ID**),
+   choose **Desktop app**.
 5. **Save the file.** Download the JSON and save it in the repo folder as
    **`oauth-client.json`**. It's already ignored by git; never share it.
+
+**Avoid weekly re-logins (optional).** While the app is in **Testing**, Google
+expires its login after about 7 days. That's fine for occasional manual runs,
+but scheduled runs will stop with `invalid_grant`. To keep the login:
+1. Under **Branding**, add a homepage link and a privacy-policy link. This
+   repo's `README.md` and `PRIVACY.md` on GitHub work.
+2. Under **Branding**, add that site's domain (for example, `github.com`) as an
+   authorized domain.
+3. Under **Audience**, press **Publish app**.
+
+For your own use you don't need Google's verification. Just click through the
+"unverified app" warning when you sign in. After publishing, sign in once more
+to get a token that lasts.
 
 ## 4. Configure
 
@@ -124,7 +140,7 @@ on Drive, set `driveUpload.deleteLocalAfterUpload: true`.
 | Message | Fix |
 |---|---|
 | `…running headless… Re-run with --headed` | The Zoom login expired. Run `npm run login` and sign in again. |
-| Google login errors such as `invalid_grant` | Delete `~/.zoom-recordings-sync/google-oauth-token.json` and run again to sign in. Tokens from a "Testing" OAuth app can expire after about a week. |
+| Google login errors such as `invalid_grant` | Delete `~/.zoom-recordings-sync/google-oauth-token.json` and run again to sign in. A "Testing" app's login expires after about a week; publish it to stop that (end of step 3). |
 | `No Drive login at … run: node auth-personal-drive.mjs` | Set `driveUpload.tokenFile` as shown in step 4. That script is only for keeping videos in a *different* Google account than the one reading the sheet. |
 | `share page lists N recording files but the sheet row lists M classes` | The link has an extra or missing recording. Check it in a browser, then map each class to its file with `clip` in `sessionOverrides` (see [how-it-works.md](how-it-works.md#hand-corrections-sessionoverrides)). |
 | `pending-manual-split` | One file holds two classes and no clear break was found. Find the break time by watching, then run `node confirm-split.mjs <stateKey> --at MM:SS`. |
